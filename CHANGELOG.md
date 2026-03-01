@@ -13,11 +13,22 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **Brightness in config** — set `display_brightness` from `config.json` instead of recompiling
 - **Smooth track transition** — quick black fade between tracks instead of hard redraw
 - **Volume swipe** — vertical swipe gesture on the touch screen to raise/lower volume
-- **Seek on progress bar** — tap the progress bar to jump to a position in the track
 - **Touch visual feedback** — brief highlight when a touch zone is activated
 - **Interpolated elapsed time** — increment the progress bar locally between LMS polls for smoother animation
 - **Player selection screen** — if `lms_player` is empty, show available players at startup and let the user pick one by touch
 - **Player name on idle screen** — display the followed player's name on the clock screen
+
+---
+
+## [1.2.0] - 2026-03-01
+
+### Added
+- **Analog clock** — new idle screen style with circle, 60 tick marks, thick hour and minute hands, thin second hand with counterweight; center dot in accent color
+- **Clock style setting** — `clock_style` field in `config.json` (`"digital"` or `"analog"`); selectable from the Web Portal; default is `"digital"`
+- **Clock screen** — dedicated screen accessible from the home menu; tap anywhere to cycle between clock styles; long-press to return to menu
+
+### Fixed
+- **Clock flickering** — incremental redraw replaces full `fillScreen` each second; analog clock erases only the hands and restores the face, digital clock overwrites digits in place; no more visible black flash
 
 ---
 

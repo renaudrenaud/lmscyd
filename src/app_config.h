@@ -12,6 +12,7 @@ struct AppConfig {
     int  lms_port;
     char lms_player   [64];   // vide = premier player en lecture
     char timezone     [64];   // nom IANA, ex: "Europe/Paris", "Asia/Shanghai"
+    char clock_style  [16];   // "digital" ou "analog"
     bool valid;               // false si le fichier est absent ou invalide
 };
 

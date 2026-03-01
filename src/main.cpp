@@ -114,7 +114,7 @@ static const uint32_t C_SEPARATOR  = 0x203060u;
 // =============================================================================
 //  État de l'interface
 // =============================================================================
-enum Screen { SCR_MAIN, SCR_HOME, SCR_INFO_SRV, SCR_INFO_PLY, SCR_PORTAL };
+enum Screen { SCR_MAIN, SCR_HOME, SCR_CLOCK, SCR_INFO_SRV, SCR_INFO_PLY, SCR_PORTAL };
 static Screen currentScreen = SCR_MAIN;
 
 // =============================================================================
@@ -225,6 +225,9 @@ static bool  fullRedrawNeeded = true;
 
 static unsigned long lastPoll    = 0;
 static unsigned long lastClock   = 0;
+
+static bool      clockNeedsFullRedraw = true;
+static struct tm clockPrevT           = {};
 
 // Web portal
 static WebServer* g_portalServer = nullptr;
@@ -597,49 +600,151 @@ static void drawPlayingScreen(bool full) {
 }
 
 // =============================================================================
+//  Horloge analogique
+// =============================================================================
+// Partie statique du cadran (cercles + graduations) — redessinée après effacement des aiguilles
+static void drawAnalogClockFace() {
+    const int   cx = SCREEN_W / 2;
+    const int   cy = 96;
+    const int   r  = 87;
+    const float CLOCK_2PI = 2.0f * M_PI;
+
+    display.drawCircle(cx, cy, r,     C_SEPARATOR);
+    display.drawCircle(cx, cy, r - 1, 0x182848u);
+
+    for (int i = 0; i < 60; i++) {
+        float a   = i * CLOCK_2PI / 60.0f;
+        bool  maj = (i % 5 == 0);
+        int   len = maj ? 11 : 4;
+        int   r0  = r - 3;
+        int   x1  = cx + (int)(r0         * sinf(a) + 0.5f);
+        int   y1  = cy - (int)(r0         * cosf(a) + 0.5f);
+        int   x2  = cx + (int)((r0 - len) * sinf(a) + 0.5f);
+        int   y2  = cy - (int)((r0 - len) * cosf(a) + 0.5f);
+        display.drawLine(x1, y1, x2, y2, maj ? C_FORMAT : 0x182848u);
+    }
+}
+
+// Aiguilles seules — appelée avec les couleurs réelles pour dessiner,
+// ou avec C_BG pour effacer sans fillScreen
+static void drawAnalogClockHands(const struct tm& t, uint32_t handColor, uint32_t secColor) {
+    const int   cx = SCREEN_W / 2;
+    const int   cy = 96;
+    const float CLOCK_2PI = 2.0f * M_PI;
+
+    auto drawHand = [&](float angle, int length, uint32_t color, int width) {
+        float px = cosf(angle);
+        float py = sinf(angle);
+        int   hx = cx + (int)(length * sinf(angle) + 0.5f);
+        int   hy = cy - (int)(length * cosf(angle) + 0.5f);
+        for (int i = -(width / 2); i <= width / 2; i++) {
+            display.drawLine(
+                cx + (int)(i * px + 0.5f), cy + (int)(i * py + 0.5f),
+                hx + (int)(i * px + 0.5f), hy + (int)(i * py + 0.5f),
+                color);
+        }
+    };
+
+    drawHand((t.tm_hour % 12 + t.tm_min / 60.0f) * CLOCK_2PI / 12.0f, 48, handColor, 5);
+    drawHand((t.tm_min + t.tm_sec / 60.0f) * CLOCK_2PI / 60.0f, 70, handColor, 3);
+
+    float sa  = t.tm_sec * CLOCK_2PI / 60.0f;
+    int   sx  = cx + (int)(80 * sinf(sa) + 0.5f);
+    int   sy  = cy - (int)(80 * cosf(sa) + 0.5f);
+    int   scx = cx - (int)(18 * sinf(sa) + 0.5f);
+    int   scy = cy + (int)(18 * cosf(sa) + 0.5f);
+    display.drawLine(scx, scy, sx, sy, secColor);
+
+    display.fillCircle(cx, cy, 5, secColor);
+    display.fillCircle(cx, cy, 3, handColor);
+}
+
+// =============================================================================
 //  Écran horloge / veille (aucun player en lecture)
 // =============================================================================
 static void drawIdleScreen() {
-    display.fillScreen(C_BG);
-
-    // Heure
     struct tm t;
-    if (getLocalTime(&t)) {
-        char timeBuf[9], dateBuf[12];
-        strftime(timeBuf, sizeof(timeBuf), "%H:%M:%S", &t);
-        strftime(dateBuf, sizeof(dateBuf), "%d/%m/%Y", &t);
+    bool hasTime  = getLocalTime(&t);
+    bool isAnalog = (strcmp(appCfg.clock_style, "analog") == 0);
+    bool prevValid = !clockNeedsFullRedraw;
 
-        display.setFont(&fonts::FreeSans24pt7b);
-        display.setTextColor(C_CLOCK, C_BG);
+    // Premier dessin (ou après changement de style / retour depuis lecture) :
+    // on efface l'écran une seule fois
+    if (clockNeedsFullRedraw) {
+        display.fillScreen(C_BG);
+        clockNeedsFullRedraw = false;
+    }
+
+    if (isAnalog) {
+        // ── Horloge analogique — mise à jour des aiguilles sans fillScreen ──
+        if (hasTime) {
+            if (prevValid)
+                drawAnalogClockHands(clockPrevT, C_BG, C_BG); // efface anciennes aiguilles
+            drawAnalogClockFace();                              // restaure le cadran
+            drawAnalogClockHands(t, C_TITLE, C_VOLUME);        // dessine les nouvelles
+            clockPrevT = t;
+
+            char dateBuf[12];
+            strftime(dateBuf, sizeof(dateBuf), "%d/%m/%Y", &t);
+            display.setFont(&fonts::Font2);
+            display.setTextColor(C_FORMAT, C_BG);
+            display.setTextDatum(lgfx::top_center);
+            display.drawString(dateBuf, SCREEN_W / 2, 196);
+            display.setTextDatum(lgfx::top_left);
+        }
+        display.setFont(&fonts::Font0);
         display.setTextDatum(lgfx::top_center);
-        display.drawString(timeBuf, SCREEN_W / 2, 30);
-
-        display.setFont(&fonts::FreeSans9pt7b);
-        display.setTextColor(C_FORMAT, C_BG);
-        display.drawString(dateBuf, SCREEN_W / 2, 100);
+        if (serverStatus.valid) {
+            char buf[64];
+            display.setTextColor(C_FORMAT, C_BG);
+            snprintf(buf, sizeof(buf), "LMS v%s  —  %d players  %d albums  %d songs",
+                     serverStatus.version.c_str(), serverStatus.playerCount,
+                     serverStatus.totalAlbums, serverStatus.totalSongs);
+            display.drawString(buf, SCREEN_W / 2, 218);
+        } else {
+            display.setTextColor(0xFF4040u, C_BG);
+            display.drawString((String("LMS unreachable — ") + appCfg.lms_ip).c_str(),
+                               SCREEN_W / 2, 218);
+        }
         display.setTextDatum(lgfx::top_left);
-    }
 
-    // Infos LMS
-    display.setFont(&fonts::Font2);
-    display.setTextDatum(lgfx::top_left);
-    if (serverStatus.valid) {
-        char buf[48];
-        display.setTextColor(C_FORMAT, C_BG);
-        snprintf(buf, sizeof(buf), "LMS v%s", serverStatus.version.c_str());
-        display.drawString(buf, MARGIN, 135);
-        snprintf(buf, sizeof(buf), "Players: %d  Albums: %d  Songs: %d",
-                 serverStatus.playerCount, serverStatus.totalAlbums, serverStatus.totalSongs);
-        display.drawString(buf, MARGIN, 155);
     } else {
-        display.setTextColor(0xFF4040u, C_BG);
-        String lmsAddr = String("LMS unreachable — ") + appCfg.lms_ip;
-        display.drawString(lmsAddr.c_str(), MARGIN, 135);
-    }
+        // ── Horloge digitale — le texte avec fond C_BG écrase lui-même ──────
+        if (hasTime) {
+            char timeBuf[9], dateBuf[12];
+            strftime(timeBuf, sizeof(timeBuf), "%H:%M:%S", &t);
+            strftime(dateBuf, sizeof(dateBuf), "%d/%m/%Y", &t);
 
-    display.setTextColor(0x303030u, C_BG);
-    display.setFont(&fonts::Font0);
-    display.drawString("Touch left=prev  center=play/pause  right=next", MARGIN, 225);
+            display.setFont(&fonts::FreeSans24pt7b);
+            display.setTextColor(C_CLOCK, C_BG);
+            display.setTextDatum(lgfx::top_center);
+            display.drawString(timeBuf, SCREEN_W / 2, 30);
+
+            display.setFont(&fonts::FreeSans9pt7b);
+            display.setTextColor(C_FORMAT, C_BG);
+            display.drawString(dateBuf, SCREEN_W / 2, 100);
+            display.setTextDatum(lgfx::top_left);
+        }
+
+        display.setFont(&fonts::Font2);
+        display.setTextDatum(lgfx::top_left);
+        if (serverStatus.valid) {
+            char buf[48];
+            display.setTextColor(C_FORMAT, C_BG);
+            snprintf(buf, sizeof(buf), "LMS v%s", serverStatus.version.c_str());
+            display.drawString(buf, MARGIN, 135);
+            snprintf(buf, sizeof(buf), "Players: %d  Albums: %d  Songs: %d",
+                     serverStatus.playerCount, serverStatus.totalAlbums, serverStatus.totalSongs);
+            display.drawString(buf, MARGIN, 155);
+        } else {
+            display.setTextColor(0xFF4040u, C_BG);
+            display.drawString((String("LMS unreachable — ") + appCfg.lms_ip).c_str(), MARGIN, 135);
+        }
+
+        display.setTextColor(0x303030u, C_BG);
+        display.setFont(&fonts::Font0);
+        display.drawString("Touch left=prev  center=play/pause  right=next", MARGIN, 225);
+    }
 }
 
 // =============================================================================
@@ -725,6 +830,11 @@ button:hover{background:#003a9e}</style></head><body>
 <input name="player" value="%PLAYER%">
 <label>Timezone <span class="hint">e.g. Europe/Paris, Asia/Shanghai</span></label>
 <input name="tz" value="%TZ%">
+<label>Clock style</label>
+<select name="clock_style" style="width:100%;padding:.4em;border:1px solid #ccc;border-radius:3px">
+<option value="digital"%SEL_DIG%>Digital</option>
+<option value="analog"%SEL_ANA%>Analog</option>
+</select>
 <button type="submit">Save &amp; Reboot</button>
 </form></body></html>)rawhtml";
 
@@ -769,6 +879,9 @@ static void portalHandleRoot() {
     html.replace("%PORT%",   String(appCfg.lms_port));
     html.replace("%PLAYER%", String(appCfg.lms_player));
     html.replace("%TZ%",     String(appCfg.timezone));
+    bool isAnalog = (strcmp(appCfg.clock_style, "analog") == 0);
+    html.replace("%SEL_DIG%", isAnalog ? ""          : " selected");
+    html.replace("%SEL_ANA%", isAnalog ? " selected" : "");
     g_portalServer->send(200, "text/html; charset=utf-8", html);
 }
 
@@ -792,6 +905,9 @@ static void portalHandleSave() {
     appCfg.lms_port = (port.toInt() > 0) ? port.toInt() : 9000;
     strlcpy(appCfg.lms_player, player.c_str(), sizeof(appCfg.lms_player));
     strlcpy(appCfg.timezone,   tz.c_str(),     sizeof(appCfg.timezone));
+    String cs = g_portalServer->arg("clock_style");
+    if (cs == "analog" || cs == "digital")
+        strlcpy(appCfg.clock_style, cs.c_str(), sizeof(appCfg.clock_style));
 
     if (saveAppConfig(appCfg)) {
         g_portalServer->send(200, "text/html; charset=utf-8", FPSTR(PORTAL_SAVED));
@@ -847,23 +963,25 @@ static void drawHomeScreen() {
     display.drawFastHLine(0, HDR_H, SCREEN_W, C_SEPARATOR);
     display.setTextDatum(lgfx::top_left);
 
-    // 4 menu items — chaque bouton : 53 px de hauteur (4×53 + 28 = 240)
-    const char*    labels[]  = { "Now Playing", "LMS Server Info", "Players Info", "Web Portal" };
-    const uint32_t accents[] = { C_PLAY_ICON,   C_ALBUM,           C_ARTIST,       C_VOLUME };
+    // 5 menu items — chaque bouton : ~42 px de hauteur (5×42 + 28 = 238 ≈ 240)
+    const int      ITEM_H    = (SCREEN_H - HDR_H) / 5;   // 42
+    const char*    labels[]  = { "Now Playing", "Clock", "LMS Server Info", "Players Info", "Web Portal" };
+    const uint32_t accents[] = { C_PLAY_ICON,   C_CLOCK,  C_ALBUM,           C_ARTIST,       C_VOLUME };
 
-    for (int i = 0; i < 4; i++) {
-        int y = HDR_H + i * 53;
-        display.fillRect(0, y, SCREEN_W, 53, C_BG);
-        display.fillRect(0, y + 2, 5, 49, accents[i]);   // accent gauche
-        display.setFont(&fonts::FreeSans12pt7b);
+    for (int i = 0; i < 5; i++) {
+        int y = HDR_H + i * ITEM_H;
+        int h = (i < 4) ? ITEM_H : (SCREEN_H - y);   // dernier item prend le reste
+        display.fillRect(0, y, SCREEN_W, h, C_BG);
+        display.fillRect(0, y + 2, 5, h - 4, accents[i]);   // accent gauche
+        display.setFont(&fonts::FreeSans9pt7b);
         display.setTextColor(accents[i], C_BG);
         display.setTextDatum(lgfx::middle_left);
-        display.drawString(labels[i], 12, y + 26);
+        display.drawString(labels[i], 12, y + h / 2);
         display.setTextColor(C_FORMAT, C_BG);
         display.setTextDatum(lgfx::middle_right);
-        display.drawString(">", SCREEN_W - MARGIN, y + 26);
-        if (i < 3)
-            display.drawFastHLine(5, y + 52, SCREEN_W - 5, C_SEPARATOR);
+        display.drawString(">", SCREEN_W - MARGIN, y + h / 2);
+        if (i < 4)
+            display.drawFastHLine(5, y + h - 1, SCREEN_W - 5, C_SEPARATOR);
     }
     display.setTextDatum(lgfx::top_left);
 }
@@ -973,6 +1091,103 @@ static void drawInfoPlayersScreen() {
 }
 
 // =============================================================================
+//  Écran horloge sélectionnable (avec bouton NEXT pour cycler les styles)
+// =============================================================================
+static void drawClockScreen() {
+    struct tm t;
+    bool hasTime  = getLocalTime(&t);
+    bool isAnalog = (strcmp(appCfg.clock_style, "analog") == 0);
+    bool prevValid = !clockNeedsFullRedraw;
+
+    if (clockNeedsFullRedraw) {
+        display.fillScreen(C_BG);
+        clockNeedsFullRedraw = false;
+
+        // Barre inférieure dessinée une seule fois (statique)
+        display.drawFastHLine(0, SCREEN_H - 22, SCREEN_W, C_SEPARATOR);
+        display.setFont(&fonts::Font2);
+        display.setTextColor(C_FORMAT, C_BG);
+        display.setTextDatum(lgfx::top_left);
+        display.drawString(isAnalog ? "Analog" : "Digital", MARGIN, SCREEN_H - 16);
+        display.setTextColor(C_ALBUM, C_BG);
+        display.setTextDatum(lgfx::top_right);
+        display.drawString("NEXT >", SCREEN_W - MARGIN, SCREEN_H - 16);
+        display.setTextDatum(lgfx::top_left);
+    }
+
+    if (isAnalog) {
+        if (hasTime) {
+            if (prevValid)
+                drawAnalogClockHands(clockPrevT, C_BG, C_BG); // efface anciennes aiguilles
+            drawAnalogClockFace();                              // restaure le cadran
+            drawAnalogClockHands(t, C_TITLE, C_VOLUME);        // dessine les nouvelles
+            clockPrevT = t;
+
+            char dateBuf[12];
+            strftime(dateBuf, sizeof(dateBuf), "%d/%m/%Y", &t);
+            display.setFont(&fonts::Font2);
+            display.setTextColor(C_FORMAT, C_BG);
+            display.setTextDatum(lgfx::top_center);
+            display.drawString(dateBuf, SCREEN_W / 2, 196);
+            display.setTextDatum(lgfx::top_left);
+        }
+        display.setFont(&fonts::Font0);
+        display.setTextDatum(lgfx::top_center);
+        if (serverStatus.valid) {
+            char buf[64];
+            display.setTextColor(C_FORMAT, C_BG);
+            snprintf(buf, sizeof(buf), "LMS v%s  —  %d players  %d albums  %d songs",
+                     serverStatus.version.c_str(), serverStatus.playerCount,
+                     serverStatus.totalAlbums, serverStatus.totalSongs);
+            display.drawString(buf, SCREEN_W / 2, 208);
+        } else {
+            display.setTextColor(0xFF4040u, C_BG);
+            display.drawString((String("LMS unreachable — ") + appCfg.lms_ip).c_str(),
+                               SCREEN_W / 2, 208);
+        }
+        display.setTextDatum(lgfx::top_left);
+    } else {
+        if (hasTime) {
+            char timeBuf[9], dateBuf[12];
+            strftime(timeBuf, sizeof(timeBuf), "%H:%M:%S", &t);
+            strftime(dateBuf, sizeof(dateBuf), "%d/%m/%Y", &t);
+            display.setFont(&fonts::FreeSans24pt7b);
+            display.setTextColor(C_CLOCK, C_BG);
+            display.setTextDatum(lgfx::top_center);
+            display.drawString(timeBuf, SCREEN_W / 2, 30);
+            display.setFont(&fonts::FreeSans9pt7b);
+            display.setTextColor(C_FORMAT, C_BG);
+            display.drawString(dateBuf, SCREEN_W / 2, 100);
+            display.setTextDatum(lgfx::top_left);
+        }
+        display.setFont(&fonts::Font2);
+        display.setTextDatum(lgfx::top_left);
+        if (serverStatus.valid) {
+            char buf[48];
+            display.setTextColor(C_FORMAT, C_BG);
+            snprintf(buf, sizeof(buf), "LMS v%s", serverStatus.version.c_str());
+            display.drawString(buf, MARGIN, 135);
+            snprintf(buf, sizeof(buf), "Players: %d  Albums: %d  Songs: %d",
+                     serverStatus.playerCount, serverStatus.totalAlbums, serverStatus.totalSongs);
+            display.drawString(buf, MARGIN, 155);
+        } else {
+            display.setTextColor(0xFF4040u, C_BG);
+            display.drawString((String("LMS unreachable — ") + appCfg.lms_ip).c_str(), MARGIN, 135);
+        }
+    }
+}
+
+static void cycleClockStyle() {
+    if (strcmp(appCfg.clock_style, "analog") == 0)
+        strlcpy(appCfg.clock_style, "digital", sizeof(appCfg.clock_style));
+    else
+        strlcpy(appCfg.clock_style, "analog", sizeof(appCfg.clock_style));
+    saveAppConfig(appCfg);
+    clockNeedsFullRedraw = true;
+    drawClockScreen();
+}
+
+// =============================================================================
 //  Navigation entre écrans
 // =============================================================================
 static void enterScreen(Screen s) {
@@ -980,13 +1195,19 @@ static void enterScreen(Screen s) {
     currentScreen = s;
     switch (s) {
         case SCR_MAIN:
-            lastPoll        = 0;        // poll LMS immédiatement
-            fullRedrawNeeded = true;
-            lastIsPlaying   = false;
+            lastPoll             = 0;   // poll LMS immédiatement
+            fullRedrawNeeded     = true;
+            lastIsPlaying        = false;
+            clockNeedsFullRedraw = true;
             display.fillScreen(C_BG);
             break;
         case SCR_HOME:
             drawHomeScreen();
+            break;
+        case SCR_CLOCK:
+            lastClock            = 0;   // forcer le dessin immédiat dans loop()
+            clockNeedsFullRedraw = true;
+            drawClockScreen();
             break;
         case SCR_INFO_SRV:
             drawInfoServerScreen();
@@ -1007,28 +1228,36 @@ static void handleShortTap(int16_t tx, int16_t ty) {
     switch (currentScreen) {
         case SCR_MAIN:
             if (!playerStatus.valid || playerStatus.playerid.isEmpty()) return;
+
+            // Zones : gauche = suivant | centre = play/pause | droite = précédent
             if (tx < SCREEN_W / 3) {
-                lms.prevTrack(playerStatus.playerid);
+                lms.nextTrack(playerStatus.playerid);
             } else if (tx < 2 * SCREEN_W / 3) {
                 if (playerStatus.isPlaying) lms.pause(playerStatus.playerid);
                 else                        lms.play(playerStatus.playerid);
             } else {
-                lms.nextTrack(playerStatus.playerid);
+                lms.prevTrack(playerStatus.playerid);
             }
             lastPoll = 0;
             break;
 
         case SCR_HOME: {
             if (ty < HDR_H) return;
-            int idx = (ty - HDR_H) / 53;
+            // 5 items de hauteur égale sur (SCREEN_H - HDR_H)
+            int idx = constrain((ty - HDR_H) * 5 / (SCREEN_H - HDR_H), 0, 4);
             switch (idx) {
                 case 0: enterScreen(SCR_MAIN);     break;
-                case 1: enterScreen(SCR_INFO_SRV); break;
-                case 2: enterScreen(SCR_INFO_PLY); break;
+                case 1: enterScreen(SCR_CLOCK);    break;
+                case 2: enterScreen(SCR_INFO_SRV); break;
+                case 3: enterScreen(SCR_INFO_PLY); break;
                 default: enterScreen(SCR_PORTAL);  break;
             }
             break;
         }
+
+        case SCR_CLOCK:
+            cycleClockStyle();
+            break;
 
         case SCR_INFO_SRV:
         case SCR_INFO_PLY:
@@ -1168,6 +1397,16 @@ void loop() {
         return;
     }
 
+    // --- Écran horloge : rafraîchir chaque seconde ---
+    if (currentScreen == SCR_CLOCK) {
+        if (now - lastClock > 1000) {
+            lastClock = now;
+            drawClockScreen();
+        }
+        delay(20);
+        return;
+    }
+
     // --- Écrans de menu statiques : rien à faire ---
     if (currentScreen != SCR_MAIN) {
         delay(20);
@@ -1227,6 +1466,7 @@ void loop() {
             playerStatus = newPlayer;
             if (lastIsPlaying || now - lastClock > 1000) {
                 lastClock        = now;
+                if (lastIsPlaying) clockNeedsFullRedraw = true;  // retour depuis lecture
                 lastIsPlaying    = false;
                 fullRedrawNeeded = true;
                 lastSongId       = -1;
