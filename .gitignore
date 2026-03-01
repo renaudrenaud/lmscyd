@@ -1,0 +1,13 @@
+# PlatformIO
+.pio/
+
+# Claude
+.claude/
+
+# Config personnelle (contient WiFi, IP LMS — ne jamais commiter)
+data/config.json
+
+# Éditeurs
+.vscode/
+*.swp
+*~
