@@ -1437,7 +1437,10 @@ void loop() {
         bool found = lms.findPlayer(appCfg.lms_player, newPlayer);
 
         if (found && newPlayer.isPlaying) {
-            bool songChanged = (newPlayer.currentSongId != lastSongId);
+            // songChanged OU données manquantes (fetch raté lors du démarrage / LMS indisponible)
+            bool songChanged = (newPlayer.currentSongId != lastSongId)
+                            || (!trackInfo.valid && newPlayer.currentSongId > 0)
+                            || (g_coverBuf == nullptr && g_coverSongId == newPlayer.currentSongId);
 
             if (songChanged) {
                 downloadCover(newPlayer.currentSongId);
