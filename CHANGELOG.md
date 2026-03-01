@@ -6,6 +6,21 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [Unreleased]
+
+### Planned
+- **Auto brightness** — adjust backlight level using the onboard photoresistor (GPIO 34/35)
+- **Brightness in config** — set `display_brightness` from `config.json` instead of recompiling
+- **Smooth track transition** — quick black fade between tracks instead of hard redraw
+- **Volume swipe** — vertical swipe gesture on the touch screen to raise/lower volume
+- **Seek on progress bar** — tap the progress bar to jump to a position in the track
+- **Touch visual feedback** — brief highlight when a touch zone is activated
+- **Interpolated elapsed time** — increment the progress bar locally between LMS polls for smoother animation
+- **Player selection screen** — if `lms_player` is empty, show available players at startup and let the user pick one by touch
+- **Player name on idle screen** — display the followed player's name on the clock screen
+
+---
+
 ## [1.0.0] - 2026-03-01
 
 ### Added
