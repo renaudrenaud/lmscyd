@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WebServer.h>
+#include <DNSServer.h>
 #include <time.h>
 
 #define LGFX_USE_V1
@@ -108,6 +110,12 @@ static const uint32_t C_PLAY_ICON  = 0x00FF00u;   // vert vif
 static const uint32_t C_PAUSE_ICON = 0xFF8000u;   // orange
 static const uint32_t C_CLOCK      = 0xFFFFFFu;
 static const uint32_t C_SEPARATOR  = 0x203060u;
+
+// =============================================================================
+//  État de l'interface
+// =============================================================================
+enum Screen { SCR_MAIN, SCR_HOME, SCR_INFO_SRV, SCR_INFO_PLY, SCR_PORTAL };
+static Screen currentScreen = SCR_MAIN;
 
 // =============================================================================
 //  Zones de l'écran (paysage 320×240)
@@ -217,6 +225,10 @@ static bool  fullRedrawNeeded = true;
 
 static unsigned long lastPoll    = 0;
 static unsigned long lastClock   = 0;
+
+// Web portal
+static WebServer* g_portalServer = nullptr;
+static DNSServer  g_dnsServer;
 
 // Cache de la pochette courante
 static uint8_t* g_coverBuf    = nullptr;
@@ -685,33 +697,390 @@ static void drawStartup() {
 }
 
 // =============================================================================
-//  Gestion du tactile
+//  Web portal — configuration via navigateur
 // =============================================================================
-static unsigned long lastTouchMs = 0;
+
+static const char PORTAL_HTML[] PROGMEM = R"rawhtml(<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LMS CYD</title><style>
+body{font-family:sans-serif;max-width:420px;margin:2em auto;padding:0 1em}
+h1{color:#333;font-size:1.4em}
+label{display:block;margin-top:1em;font-weight:bold;font-size:.9em}
+input{width:100%;padding:.4em;box-sizing:border-box;border:1px solid #ccc;border-radius:3px}
+.hint{font-weight:normal;color:#888;font-size:.8em}
+button{display:block;width:100%;margin-top:1.5em;padding:.7em;background:#0055cc;
+       color:#fff;border:none;border-radius:4px;font-size:1em;cursor:pointer}
+button:hover{background:#003a9e}</style></head><body>
+<h1>LMS CYD — Configuration</h1>
+<form method="POST" action="/save">
+<label>WiFi SSID</label>
+<input name="ssid" value="%SSID%" required>
+<label>WiFi Password <span class="hint">(leave empty to keep current)</span></label>
+<input name="pass" type="password" placeholder="(unchanged)">
+<label>LMS IP address</label>
+<input name="ip" value="%IP%" required>
+<label>LMS Port</label>
+<input name="port" value="%PORT%">
+<label>Player name <span class="hint">(empty = first active)</span></label>
+<input name="player" value="%PLAYER%">
+<label>Timezone <span class="hint">e.g. Europe/Paris, Asia/Shanghai</span></label>
+<input name="tz" value="%TZ%">
+<button type="submit">Save &amp; Reboot</button>
+</form></body></html>)rawhtml";
+
+static const char PORTAL_SAVED[] PROGMEM =
+    "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+    "<style>body{font-family:sans-serif;text-align:center;padding:3em}"
+    "h2{color:green}</style></head><body>"
+    "<h2>Saved!</h2><p>The device is rebooting&hellip;</p></body></html>";
+
+static void drawPortalScreen() {
+    display.fillScreen(C_BG);
+    display.fillRect(0, 0, SCREEN_W, HDR_H, C_HEADER_BG);
+    display.setFont(&fonts::FreeSans9pt7b);
+    display.setTextColor(C_TITLE, C_HEADER_BG);
+    display.setTextDatum(lgfx::top_center);
+    display.drawString("Web Portal", SCREEN_W / 2, 6);
+    display.drawFastHLine(0, HDR_H, SCREEN_W, C_SEPARATOR);
+
+    display.setTextColor(C_FORMAT, C_BG);
+    display.drawString("Connect your phone to:", SCREEN_W / 2, 46);
+    display.setFont(&fonts::FreeSans12pt7b);
+    display.setTextColor(C_ARTIST, C_BG);
+    display.drawString("LMS-CYD-Config", SCREEN_W / 2, 68);
+
+    display.setFont(&fonts::FreeSans9pt7b);
+    display.setTextColor(C_FORMAT, C_BG);
+    display.drawString("Then open browser at:", SCREEN_W / 2, 110);
+    display.setFont(&fonts::FreeSans12pt7b);
+    display.setTextColor(C_ALBUM, C_BG);
+    display.drawString("192.168.4.1", SCREEN_W / 2, 132);
+
+    display.setFont(&fonts::Font2);
+    display.setTextColor(0x404040u, C_BG);
+    display.drawString("Hold screen to cancel", SCREEN_W / 2, 200);
+    display.setTextDatum(lgfx::top_left);
+}
+
+static void portalHandleRoot() {
+    String html = FPSTR(PORTAL_HTML);
+    html.replace("%SSID%",   String(appCfg.wifi_ssid));
+    html.replace("%IP%",     String(appCfg.lms_ip));
+    html.replace("%PORT%",   String(appCfg.lms_port));
+    html.replace("%PLAYER%", String(appCfg.lms_player));
+    html.replace("%TZ%",     String(appCfg.timezone));
+    g_portalServer->send(200, "text/html; charset=utf-8", html);
+}
+
+static void portalHandleSave() {
+    String ssid   = g_portalServer->arg("ssid");
+    String pass   = g_portalServer->arg("pass");
+    String ip     = g_portalServer->arg("ip");
+    String port   = g_portalServer->arg("port");
+    String player = g_portalServer->arg("player");
+    String tz     = g_portalServer->arg("tz");
+
+    if (ssid.isEmpty() || ip.isEmpty()) {
+        g_portalServer->send(400, "text/plain", "SSID and LMS IP are required.");
+        return;
+    }
+
+    strlcpy(appCfg.wifi_ssid,  ssid.c_str(), sizeof(appCfg.wifi_ssid));
+    if (pass.length() > 0)
+        strlcpy(appCfg.wifi_password, pass.c_str(), sizeof(appCfg.wifi_password));
+    strlcpy(appCfg.lms_ip,     ip.c_str(),     sizeof(appCfg.lms_ip));
+    appCfg.lms_port = (port.toInt() > 0) ? port.toInt() : 9000;
+    strlcpy(appCfg.lms_player, player.c_str(), sizeof(appCfg.lms_player));
+    strlcpy(appCfg.timezone,   tz.c_str(),     sizeof(appCfg.timezone));
+
+    if (saveAppConfig(appCfg)) {
+        g_portalServer->send(200, "text/html; charset=utf-8", FPSTR(PORTAL_SAVED));
+        delay(2000);
+        ESP.restart();
+    } else {
+        g_portalServer->send(500, "text/plain", "Failed to save config to flash.");
+    }
+}
+
+static void stopPortal() {
+    if (!g_portalServer) return;
+    g_dnsServer.stop();
+    g_portalServer->stop();
+    delete g_portalServer;
+    g_portalServer = nullptr;
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);
+}
+
+static void startPortal() {
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.softAP("LMS-CYD-Config");
+
+    // DNS captif : toutes les requêtes → 192.168.4.1
+    // Déclenche la popup "portail captif" sur Android / iOS
+    g_dnsServer.start(53, "*", IPAddress(192, 168, 4, 1));
+
+    g_portalServer = new WebServer(80);
+    g_portalServer->on("/",     HTTP_GET,  portalHandleRoot);
+    g_portalServer->on("/save", HTTP_POST, portalHandleSave);
+    // Captive portal : toute URL inconnue → formulaire
+    g_portalServer->onNotFound([]() {
+        g_portalServer->sendHeader("Location", "http://192.168.4.1/");
+        g_portalServer->send(302, "text/plain", "");
+    });
+    g_portalServer->begin();
+    drawPortalScreen();
+}
+
+// =============================================================================
+//  Écran Home — menu de navigation
+// =============================================================================
+static void drawHomeScreen() {
+    display.fillScreen(C_BG);
+
+    // Header
+    display.fillRect(0, 0, SCREEN_W, HDR_H, C_HEADER_BG);
+    display.setFont(&fonts::FreeSans9pt7b);
+    display.setTextColor(C_TITLE, C_HEADER_BG);
+    display.setTextDatum(lgfx::top_center);
+    display.drawString("MENU", SCREEN_W / 2, 6);
+    display.drawFastHLine(0, HDR_H, SCREEN_W, C_SEPARATOR);
+    display.setTextDatum(lgfx::top_left);
+
+    // 4 menu items — chaque bouton : 53 px de hauteur (4×53 + 28 = 240)
+    const char*    labels[]  = { "Now Playing", "LMS Server Info", "Players Info", "Web Portal" };
+    const uint32_t accents[] = { C_PLAY_ICON,   C_ALBUM,           C_ARTIST,       C_VOLUME };
+
+    for (int i = 0; i < 4; i++) {
+        int y = HDR_H + i * 53;
+        display.fillRect(0, y, SCREEN_W, 53, C_BG);
+        display.fillRect(0, y + 2, 5, 49, accents[i]);   // accent gauche
+        display.setFont(&fonts::FreeSans12pt7b);
+        display.setTextColor(accents[i], C_BG);
+        display.setTextDatum(lgfx::middle_left);
+        display.drawString(labels[i], 12, y + 26);
+        display.setTextColor(C_FORMAT, C_BG);
+        display.setTextDatum(lgfx::middle_right);
+        display.drawString(">", SCREEN_W - MARGIN, y + 26);
+        if (i < 3)
+            display.drawFastHLine(5, y + 52, SCREEN_W - 5, C_SEPARATOR);
+    }
+    display.setTextDatum(lgfx::top_left);
+}
+
+// =============================================================================
+//  Écran informations LMS Server
+// =============================================================================
+static void drawInfoServerScreen() {
+    display.fillScreen(C_BG);
+    display.fillRect(0, 0, SCREEN_W, HDR_H, C_HEADER_BG);
+    display.setFont(&fonts::FreeSans9pt7b);
+    display.setTextColor(C_TITLE, C_HEADER_BG);
+    display.setTextDatum(lgfx::top_center);
+    display.drawString("LMS Server Info", SCREEN_W / 2, 6);
+    display.drawFastHLine(0, HDR_H, SCREEN_W, C_SEPARATOR);
+    display.setTextDatum(lgfx::top_left);
+
+    display.setFont(&fonts::Font2);
+    const int COL2 = 120;
+    int y = 38;
+
+    auto row = [&](const char* label, const String& val, uint32_t color) {
+        display.setTextColor(C_FORMAT, C_BG);
+        display.drawString(label, MARGIN, y);
+        display.setTextColor(color, C_BG);
+        display.drawString(val.c_str(), COL2, y);
+        y += 20;
+    };
+
+    row("IP address", String(appCfg.lms_ip), C_TITLE);
+    row("Port",       String(appCfg.lms_port), C_TITLE);
+    y += 4;
+    if (serverStatus.valid) {
+        row("LMS version",  serverStatus.version,                   C_ALBUM);
+        row("Players",      String(serverStatus.playerCount),        C_TITLE);
+        row("Albums",       String(serverStatus.totalAlbums),        C_TITLE);
+        row("Songs",        String(serverStatus.totalSongs),         C_TITLE);
+    } else {
+        display.setTextColor(0xFF4040u, C_BG);
+        display.drawString("Server unreachable", MARGIN, y);
+    }
+
+    display.setFont(&fonts::Font0);
+    display.setTextColor(0x404040u, C_BG);
+    display.setTextDatum(lgfx::top_center);
+    display.drawString("Tap anywhere to go back", SCREEN_W / 2, 225);
+    display.setTextDatum(lgfx::top_left);
+}
+
+// =============================================================================
+//  Écran informations Players
+// =============================================================================
+static void drawInfoPlayersScreen() {
+    display.fillScreen(C_BG);
+    display.fillRect(0, 0, SCREEN_W, HDR_H, C_HEADER_BG);
+    display.setFont(&fonts::FreeSans9pt7b);
+    display.setTextColor(C_TITLE, C_HEADER_BG);
+    display.setTextDatum(lgfx::top_center);
+    display.drawString("Players Info", SCREEN_W / 2, 6);
+    display.drawFastHLine(0, HDR_H, SCREEN_W, C_SEPARATOR);
+    display.setTextDatum(lgfx::top_left);
+
+    static const int MAX_PLY = 5;
+    PlayerInfo players[MAX_PLY];
+    int count = lms.getPlayersInfo(players, MAX_PLY);
+
+    if (count == 0) {
+        display.setFont(&fonts::Font2);
+        display.setTextColor(0xFF4040u, C_BG);
+        display.setTextDatum(lgfx::top_center);
+        display.drawString("No players found", SCREEN_W / 2, 100);
+        display.setTextDatum(lgfx::top_left);
+    } else {
+        int y = 34;
+        for (int i = 0; i < count; i++) {
+            uint32_t nc = players[i].connected ? C_PLAY_ICON : C_FORMAT;
+
+            display.setFont(&fonts::FreeSans9pt7b);
+            display.setTextColor(nc, C_BG);
+            String name = players[i].name;
+            if (display.textWidth(name.c_str()) > SCREEN_W - 2 * MARGIN)
+                name = name.substring(0, 20) + "...";
+            display.drawString(name.c_str(), MARGIN, y);
+            y += 16;
+
+            display.setFont(&fonts::Font2);
+            display.setTextColor(C_FORMAT, C_BG);
+            display.drawString(("IP:  " + (players[i].ip.length() > 0 ? players[i].ip : "--")).c_str(),
+                               MARGIN + 6, y); y += 13;
+            display.drawString(("MAC: " + players[i].playerid).c_str(),
+                               MARGIN + 6, y); y += 13;
+            if (players[i].firmware.length() > 0) {
+                display.drawString(("FW:  " + players[i].firmware).c_str(),
+                                   MARGIN + 6, y); y += 13;
+            }
+            y += 4;
+            if (y > 210) break;
+            display.drawFastHLine(MARGIN, y - 2, SCREEN_W - 2 * MARGIN, C_SEPARATOR);
+        }
+    }
+
+    display.setFont(&fonts::Font0);
+    display.setTextColor(0x404040u, C_BG);
+    display.setTextDatum(lgfx::top_center);
+    display.drawString("Tap anywhere to go back", SCREEN_W / 2, 225);
+    display.setTextDatum(lgfx::top_left);
+}
+
+// =============================================================================
+//  Navigation entre écrans
+// =============================================================================
+static void enterScreen(Screen s) {
+    if (currentScreen == SCR_PORTAL && s != SCR_PORTAL) stopPortal();
+    currentScreen = s;
+    switch (s) {
+        case SCR_MAIN:
+            lastPoll        = 0;        // poll LMS immédiatement
+            fullRedrawNeeded = true;
+            lastIsPlaying   = false;
+            display.fillScreen(C_BG);
+            break;
+        case SCR_HOME:
+            drawHomeScreen();
+            break;
+        case SCR_INFO_SRV:
+            drawInfoServerScreen();
+            break;
+        case SCR_INFO_PLY:
+            drawInfoPlayersScreen();
+            break;
+        case SCR_PORTAL:
+            startPortal();
+            break;
+    }
+}
+
+// =============================================================================
+//  Gestion des taps courts (selon l'écran courant)
+// =============================================================================
+static void handleShortTap(int16_t tx, int16_t ty) {
+    switch (currentScreen) {
+        case SCR_MAIN:
+            if (!playerStatus.valid || playerStatus.playerid.isEmpty()) return;
+            if (tx < SCREEN_W / 3) {
+                lms.prevTrack(playerStatus.playerid);
+            } else if (tx < 2 * SCREEN_W / 3) {
+                if (playerStatus.isPlaying) lms.pause(playerStatus.playerid);
+                else                        lms.play(playerStatus.playerid);
+            } else {
+                lms.nextTrack(playerStatus.playerid);
+            }
+            lastPoll = 0;
+            break;
+
+        case SCR_HOME: {
+            if (ty < HDR_H) return;
+            int idx = (ty - HDR_H) / 53;
+            switch (idx) {
+                case 0: enterScreen(SCR_MAIN);     break;
+                case 1: enterScreen(SCR_INFO_SRV); break;
+                case 2: enterScreen(SCR_INFO_PLY); break;
+                default: enterScreen(SCR_PORTAL);  break;
+            }
+            break;
+        }
+
+        case SCR_INFO_SRV:
+        case SCR_INFO_PLY:
+            enterScreen(SCR_HOME);
+            break;
+
+        case SCR_PORTAL:
+            break;  // touches ignorées (l'utilisateur navigue depuis son téléphone)
+    }
+}
+
+// =============================================================================
+//  Gestion du tactile (long press → menu principal)
+// =============================================================================
+static unsigned long lastTouchMs   = 0;
+static bool          touchActive   = false;
+static unsigned long touchDownMs   = 0;
+static int16_t       lastTx        = 0;
+static int16_t       lastTy        = 0;
 static const int     TOUCH_DEBOUNCE_MS = 400;
+static const int     LONG_PRESS_MS     = 1500;
 
 static void handleTouch() {
     int16_t tx, ty;
-    if (!display.getTouch(&tx, &ty)) return;   // pas de toucher
+    bool pressed = display.getTouch(&tx, &ty);
     unsigned long now = millis();
-    if (now - lastTouchMs < TOUCH_DEBOUNCE_MS) return;
-    lastTouchMs = now;
 
-    if (!playerStatus.valid || playerStatus.playerid.isEmpty()) return;
+    if (pressed) {
+        if (!touchActive) {
+            touchActive = true;
+            touchDownMs = now;
+        }
+        lastTx = tx;
+        lastTy = ty;
 
-    // Zones : gauche = précédent | centre = play/pause | droite = suivant
-    if (tx < SCREEN_W / 3) {
-        lms.prevTrack(playerStatus.playerid);
-    } else if (tx < 2 * SCREEN_W / 3) {
-        if (playerStatus.isPlaying)
-            lms.pause(playerStatus.playerid);
-        else
-            lms.play(playerStatus.playerid);
+        // Long press → ouvrir le menu (depuis n'importe quel écran sauf le menu lui-même)
+        if (currentScreen != SCR_HOME && now - touchDownMs >= LONG_PRESS_MS) {
+            touchActive = false;
+            touchDownMs = 0;
+            lastTouchMs = now;
+            enterScreen(SCR_HOME);
+        }
     } else {
-        lms.nextTrack(playerStatus.playerid);
+        if (touchActive) {
+            touchActive = false;
+            unsigned long held = now - touchDownMs;
+            if (held < LONG_PRESS_MS && now - lastTouchMs >= TOUCH_DEBOUNCE_MS) {
+                lastTouchMs = now;
+                handleShortTap(lastTx, lastTy);
+            }
+        }
     }
-
-    lastPoll = 0;
 }
 
 // =============================================================================
@@ -788,8 +1157,22 @@ void setup() {
 void loop() {
     unsigned long now = millis();
 
-    // --- Gestion du tactile ---
+    // --- Gestion du tactile (tous écrans) ---
     handleTouch();
+
+    // --- Portail web : traiter les requêtes HTTP ---
+    if (currentScreen == SCR_PORTAL) {
+        g_dnsServer.processNextRequest();
+        if (g_portalServer) g_portalServer->handleClient();
+        delay(5);
+        return;
+    }
+
+    // --- Écrans de menu statiques : rien à faire ---
+    if (currentScreen != SCR_MAIN) {
+        delay(20);
+        return;
+    }
 
     // --- Reconnexion WiFi automatique ---
     if (WiFi.status() != WL_CONNECTED) {

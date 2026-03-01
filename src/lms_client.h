@@ -30,6 +30,14 @@ struct PlayerStatus {
     int     currentSongId  = 0;
 };
 
+struct PlayerInfo {
+    String name;
+    String playerid;   // MAC address
+    String ip;
+    String firmware;
+    bool   connected = false;
+};
+
 struct TrackInfo {
     bool    valid       = false;
     int     id          = 0;
@@ -56,6 +64,10 @@ public:
     void init(const char* ip, int port);  // (re)configure l'URL du serveur
 
     ServerStatus getServerStatus();
+
+    // Retourne les infos de tous les players (nom, IP, MAC, firmware).
+    // Remplit le tableau out (max maxCount entrées) et retourne le nombre trouvé.
+    int getPlayersInfo(PlayerInfo* out, int maxCount);
 
     // Cherche le player préféré (par nom) ou le premier en lecture.
     // Retourne true si un player a été trouvé, et remplit `out`.

@@ -19,3 +19,7 @@ struct AppConfig {
 // Retourne true si la lecture a réussi.
 // En cas d'échec, cfg.valid == false et les champs sont vides.
 bool loadAppConfig(AppConfig& cfg);
+
+// Sauvegarde cfg dans /config.json sur LittleFS.
+// Retourne true si l'écriture a réussi.
+bool saveAppConfig(const AppConfig& cfg);

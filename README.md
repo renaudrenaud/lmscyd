@@ -21,8 +21,14 @@ running on the [ESP32-2432S028](https://github.com/witnessmenow/ESP32-Cheap-Yell
 - **IANA timezone** — set your timezone by name in `config.json`
 - **Zero-recompile config** — all network settings in `data/config.json`
 - **Resilient** — survives transient WiFi drops and LMS timeouts
+- **Navigation menu** — long-press the screen to open the menu
+- **LMS Server Info** — IP, port, LMS version, library statistics
+- **Players Info** — per-player IP, MAC address and firmware version
+- **Web Portal** — edit all settings from any browser, no USB needed
 
 ## Screen layout
+
+![screen](/resources/player_screen_01.jpg)
 
 ```
 ┌──────────────────────────────────┐
@@ -118,11 +124,33 @@ Full list in `src/main.cpp` → `ianaToposix()`.
 
 ## Touch zones
 
-| Screen area | Action |
-|-------------|--------|
-| Left third | Previous track |
-| Center third | Play / Pause |
-| Right third | Next track |
+| Gesture | Action |
+|---------|--------|
+| Short tap — left third | Previous track |
+| Short tap — center third | Play / Pause |
+| Short tap — right third | Next track |
+| **Long press (1.5 s)** | **Open navigation menu** |
+
+## Navigation menu
+
+Hold the screen for 1.5 seconds from any screen to open the menu.
+
+| Menu item | Description |
+|-----------|-------------|
+| Now Playing | Return to the play / idle screen |
+| LMS Server Info | IP, port, LMS version, album and song counts |
+| Players Info | IP, MAC address and firmware for every known player |
+| Web Portal | Edit settings from a phone browser — no USB needed |
+
+## Web Portal
+
+1. Select **Web Portal** from the menu.
+2. The device creates an open Wi-Fi network: **`LMS-CYD-Config`**
+3. Connect your phone — a captive-portal popup appears automatically.
+4. Fill in the form and tap **Save & Reboot**.
+5. To cancel without saving, long-press the screen.
+
+> The portal edits `config.json` on the device and reboots immediately after saving.
 
 ## Building from source
 

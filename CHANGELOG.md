@@ -21,6 +21,17 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.1.0] - 2026-03-01
+
+### Added
+- **Home menu** — long-press anywhere on the screen (1.5 s) to open the navigation menu; short-tap to select an item; "Now Playing" returns to the main screen
+- **LMS Server Info screen** — shows configured IP / port, LMS version, connected player count, album and song counts
+- **Players Info screen** — lists all known players with IP address, MAC address and firmware version; connected players highlighted in green
+- **Web Portal** — starts an open Wi-Fi AP (`LMS-CYD-Config`); captive-portal DNS redirects the phone browser automatically to `192.168.4.1`; HTML form lets you edit all settings (WiFi, LMS IP/port, player, timezone) and reboot; long-press to cancel
+- **`saveAppConfig()`** — writes updated settings back to `config.json` on LittleFS; used by the Web Portal after form submission
+
+---
+
 ## [1.0.0] - 2026-03-01
 
 ### Added

@@ -48,3 +48,32 @@ bool loadAppConfig(AppConfig& cfg) {
                   cfg.wifi_ssid, cfg.lms_ip, cfg.lms_port, cfg.lms_player);
     return true;
 }
+
+bool saveAppConfig(const AppConfig& cfg) {
+    if (!LittleFS.begin(false)) {
+        Serial.println("[config] Cannot mount LittleFS for save");
+        return false;
+    }
+
+    File f = LittleFS.open("/config.json", "w");
+    if (!f) {
+        Serial.println("[config] Cannot open /config.json for writing");
+        LittleFS.end();
+        return false;
+    }
+
+    JsonDocument doc;
+    doc["wifi_ssid"]     = cfg.wifi_ssid;
+    doc["wifi_password"] = cfg.wifi_password;
+    doc["lms_ip"]        = cfg.lms_ip;
+    doc["lms_port"]      = cfg.lms_port;
+    doc["lms_player"]    = cfg.lms_player;
+    doc["timezone"]      = cfg.timezone;
+
+    bool ok = (serializeJson(doc, f) > 0);
+    f.close();
+    LittleFS.end();
+
+    Serial.println(ok ? "[config] Saved OK" : "[config] Write failed");
+    return ok;
+}

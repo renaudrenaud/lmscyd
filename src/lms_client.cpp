@@ -56,6 +56,30 @@ ServerStatus LmsClient::getServerStatus() {
 }
 
 // ---------------------------------------------------------------------------
+//  Liste détaillée de tous les players
+// ---------------------------------------------------------------------------
+int LmsClient::getPlayersInfo(PlayerInfo* out, int maxCount) {
+    JsonDocument doc;
+    String payload = F(R"({"id":0,"params":["-",["players",0,20]],"method":"slim.request"})");
+    if (!_post(payload, doc)) return 0;
+
+    JsonArray loop = doc["result"]["players_loop"].as<JsonArray>();
+    if (loop.isNull()) return 0;
+
+    int count = 0;
+    for (JsonVariant p : loop) {
+        if (count >= maxCount) break;
+        out[count].name      = p["name"].as<String>();
+        out[count].playerid  = p["playerid"].as<String>();
+        out[count].ip        = p["ip"].as<String>();
+        out[count].firmware  = p["firmware"].as<String>();
+        out[count].connected = (p["connected"] | 0) == 1;
+        count++;
+    }
+    return count;
+}
+
+// ---------------------------------------------------------------------------
 //  Recherche du player actif
 // ---------------------------------------------------------------------------
 bool LmsClient::findPlayer(const char* preferredName, PlayerStatus& out) {
