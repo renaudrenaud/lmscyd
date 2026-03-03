@@ -41,6 +41,7 @@ bool loadAppConfig(AppConfig& cfg) {
     cfg.lms_port = doc["lms_port"] | 9000;
     strlcpy(cfg.lms_player,    doc["lms_player"]    | "",        sizeof(cfg.lms_player));
     strlcpy(cfg.timezone,      doc["timezone"]      | "UTC",     sizeof(cfg.timezone));
+    strlcpy(cfg.timezone2,     doc["timezone2"]     | "",        sizeof(cfg.timezone2));
     strlcpy(cfg.clock_style,   doc["clock_style"]   | "digital", sizeof(cfg.clock_style));
 
     cfg.valid = true;
@@ -70,6 +71,7 @@ bool saveAppConfig(const AppConfig& cfg) {
     doc["lms_port"]      = cfg.lms_port;
     doc["lms_player"]    = cfg.lms_player;
     doc["timezone"]      = cfg.timezone;
+    doc["timezone2"]     = cfg.timezone2;
     doc["clock_style"]   = cfg.clock_style;
 
     bool ok = (serializeJson(doc, f) > 0);

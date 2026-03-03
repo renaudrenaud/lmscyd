@@ -638,6 +638,30 @@ static void drawPlayingScreen(bool full) {
 }
 
 // =============================================================================
+//  Helpers double fuseau horaire
+// =============================================================================
+
+// Renvoie la partie "ville" d'un nom IANA, ex: "Europe/Paris" → "Paris"
+static String tzCityName(const char* iana) {
+    const char* slash = strrchr(iana, '/');
+    return String(slash ? slash + 1 : iana);
+}
+
+// Retourne l'heure locale dans un fuseau IANA quelconque.
+// Change temporairement TZ puis restaure le fuseau principal.
+static bool getTimeInZone(const char* iana, struct tm& t) {
+    time_t now;
+    time(&now);
+    if (now < 1000000) return false;   // NTP pas encore synchronisé
+    setenv("TZ", ianaToposix(iana), 1);
+    tzset();
+    localtime_r(&now, &t);
+    setenv("TZ", ianaToposix(appCfg.timezone), 1);
+    tzset();
+    return true;
+}
+
+// =============================================================================
 //  Horloge analogique
 // =============================================================================
 // Partie statique du cadran (cercles + graduations) — redessinée après effacement des aiguilles
@@ -705,6 +729,7 @@ static void drawIdleScreen() {
     bool hasTime  = getLocalTime(&t);
     bool isAnalog = (strcmp(appCfg.clock_style, "analog") == 0);
     bool prevValid = !clockNeedsFullRedraw;
+    bool hasTz2   = (appCfg.timezone2[0] != '\0');
 
     // Premier dessin (ou après changement de style / retour depuis lecture) :
     // on efface l'écran une seule fois
@@ -727,7 +752,20 @@ static void drawIdleScreen() {
             display.setFont(&fonts::Font2);
             display.setTextColor(C_FORMAT, C_BG);
             display.setTextDatum(lgfx::top_center);
-            display.drawString(dateBuf, SCREEN_W / 2, 196);
+            display.drawString(dateBuf, SCREEN_W / 2, hasTz2 ? 186 : 196);
+
+            if (hasTz2) {
+                struct tm t2;
+                if (getTimeInZone(appCfg.timezone2, t2)) {
+                    char tz2Buf[32];
+                    strftime(tz2Buf, sizeof(tz2Buf), "%H:%M:%S", &t2);
+                    char tz2Line[48];
+                    snprintf(tz2Line, sizeof(tz2Line), "%s  %s",
+                             tzCityName(appCfg.timezone2).c_str(), tz2Buf);
+                    display.setTextColor(C_ALBUM, C_BG);
+                    display.drawString(tz2Line, SCREEN_W / 2, 204);
+                }
+            }
             display.setTextDatum(lgfx::top_left);
         }
         display.setFont(&fonts::Font0);
@@ -738,11 +776,11 @@ static void drawIdleScreen() {
             snprintf(buf, sizeof(buf), "LMS v%s  —  %d players  %d albums  %d songs",
                      serverStatus.version.c_str(), serverStatus.playerCount,
                      serverStatus.totalAlbums, serverStatus.totalSongs);
-            display.drawString(buf, SCREEN_W / 2, 218);
+            display.drawString(buf, SCREEN_W / 2, 220);
         } else {
             display.setTextColor(0xFF4040u, C_BG);
             display.drawString((String("LMS unreachable — ") + appCfg.lms_ip).c_str(),
-                               SCREEN_W / 2, 218);
+                               SCREEN_W / 2, 220);
         }
         display.setTextDatum(lgfx::top_left);
 
@@ -756,11 +794,35 @@ static void drawIdleScreen() {
             display.setFont(&fonts::FreeSans24pt7b);
             display.setTextColor(C_CLOCK, C_BG);
             display.setTextDatum(lgfx::top_center);
-            display.drawString(timeBuf, SCREEN_W / 2, 30);
+            display.drawString(timeBuf, SCREEN_W / 2, hasTz2 ? 2 : 30);
 
-            display.setFont(&fonts::FreeSans9pt7b);
+            if (hasTz2) {
+                display.setFont(&fonts::Font2);
+            } else {
+                display.setFont(&fonts::FreeSans9pt7b);
+            }
             display.setTextColor(C_FORMAT, C_BG);
-            display.drawString(dateBuf, SCREEN_W / 2, 100);
+            display.drawString(dateBuf, SCREEN_W / 2, hasTz2 ? 42 : 100);
+
+            if (hasTz2) {
+                display.drawFastHLine(MARGIN, 62, SCREEN_W - 2 * MARGIN, C_SEPARATOR);
+                display.setFont(&fonts::Font2);
+                display.setTextColor(C_FORMAT, C_BG);
+                display.drawString(tzCityName(appCfg.timezone2).c_str(), SCREEN_W / 2, 66);
+
+                struct tm t2;
+                if (getTimeInZone(appCfg.timezone2, t2)) {
+                    char tz2Time[9], tz2Date[12];
+                    strftime(tz2Time, sizeof(tz2Time), "%H:%M:%S", &t2);
+                    strftime(tz2Date, sizeof(tz2Date), "%d/%m/%Y", &t2);
+                    display.setFont(&fonts::FreeSans18pt7b);
+                    display.setTextColor(C_CLOCK, C_BG);
+                    display.drawString(tz2Time, SCREEN_W / 2, 84);
+                    display.setFont(&fonts::Font2);
+                    display.setTextColor(C_FORMAT, C_BG);
+                    display.drawString(tz2Date, SCREEN_W / 2, 115);
+                }
+            }
             display.setTextDatum(lgfx::top_left);
         }
 
@@ -770,13 +832,13 @@ static void drawIdleScreen() {
             char buf[48];
             display.setTextColor(C_FORMAT, C_BG);
             snprintf(buf, sizeof(buf), "LMS v%s", serverStatus.version.c_str());
-            display.drawString(buf, MARGIN, 135);
+            display.drawString(buf, MARGIN, hasTz2 ? 140 : 135);
             snprintf(buf, sizeof(buf), "Players: %d  Albums: %d  Songs: %d",
                      serverStatus.playerCount, serverStatus.totalAlbums, serverStatus.totalSongs);
-            display.drawString(buf, MARGIN, 155);
+            display.drawString(buf, MARGIN, hasTz2 ? 156 : 155);
         } else {
             display.setTextColor(0xFF4040u, C_BG);
-            display.drawString((String("LMS unreachable — ") + appCfg.lms_ip).c_str(), MARGIN, 135);
+            display.drawString((String("LMS unreachable — ") + appCfg.lms_ip).c_str(), MARGIN, hasTz2 ? 140 : 135);
         }
 
         display.setTextColor(0x303030u, C_BG);
@@ -868,6 +930,8 @@ button:hover{background:#003a9e}</style></head><body>
 <input name="player" value="%PLAYER%">
 <label>Timezone <span class="hint">e.g. Europe/Paris, Asia/Shanghai</span></label>
 <input name="tz" value="%TZ%">
+<label>Timezone 2 <span class="hint">(optional — leave empty to disable)</span></label>
+<input name="tz2" value="%TZ2%">
 <label>Clock style</label>
 <select name="clock_style" style="width:100%;padding:.4em;border:1px solid #ccc;border-radius:3px">
 <option value="digital"%SEL_DIG%>Digital</option>
@@ -917,6 +981,7 @@ static void portalHandleRoot() {
     html.replace("%PORT%",   String(appCfg.lms_port));
     html.replace("%PLAYER%", String(appCfg.lms_player));
     html.replace("%TZ%",     String(appCfg.timezone));
+    html.replace("%TZ2%",    String(appCfg.timezone2));
     bool isAnalog = (strcmp(appCfg.clock_style, "analog") == 0);
     html.replace("%SEL_DIG%", isAnalog ? ""          : " selected");
     html.replace("%SEL_ANA%", isAnalog ? " selected" : "");
@@ -930,6 +995,7 @@ static void portalHandleSave() {
     String port   = g_portalServer->arg("port");
     String player = g_portalServer->arg("player");
     String tz     = g_portalServer->arg("tz");
+    String tz2    = g_portalServer->arg("tz2");
 
     if (ssid.isEmpty() || ip.isEmpty()) {
         g_portalServer->send(400, "text/plain", "SSID and LMS IP are required.");
@@ -943,6 +1009,7 @@ static void portalHandleSave() {
     appCfg.lms_port = (port.toInt() > 0) ? port.toInt() : 9000;
     strlcpy(appCfg.lms_player, player.c_str(), sizeof(appCfg.lms_player));
     strlcpy(appCfg.timezone,   tz.c_str(),     sizeof(appCfg.timezone));
+    strlcpy(appCfg.timezone2,  tz2.c_str(),    sizeof(appCfg.timezone2));
     String cs = g_portalServer->arg("clock_style");
     if (cs == "analog" || cs == "digital")
         strlcpy(appCfg.clock_style, cs.c_str(), sizeof(appCfg.clock_style));
@@ -1136,6 +1203,7 @@ static void drawClockScreen() {
     bool hasTime  = getLocalTime(&t);
     bool isAnalog = (strcmp(appCfg.clock_style, "analog") == 0);
     bool prevValid = !clockNeedsFullRedraw;
+    bool hasTz2   = (appCfg.timezone2[0] != '\0');
 
     if (clockNeedsFullRedraw) {
         display.fillScreen(C_BG);
@@ -1166,24 +1234,39 @@ static void drawClockScreen() {
             display.setFont(&fonts::Font2);
             display.setTextColor(C_FORMAT, C_BG);
             display.setTextDatum(lgfx::top_center);
-            display.drawString(dateBuf, SCREEN_W / 2, 196);
+            display.drawString(dateBuf, SCREEN_W / 2, hasTz2 ? 186 : 196);
+
+            if (hasTz2) {
+                struct tm t2;
+                if (getTimeInZone(appCfg.timezone2, t2)) {
+                    char tz2Buf[32];
+                    strftime(tz2Buf, sizeof(tz2Buf), "%H:%M:%S", &t2);
+                    char tz2Line[48];
+                    snprintf(tz2Line, sizeof(tz2Line), "%s  %s",
+                             tzCityName(appCfg.timezone2).c_str(), tz2Buf);
+                    display.setTextColor(C_ALBUM, C_BG);
+                    display.drawString(tz2Line, SCREEN_W / 2, 202);
+                }
+            }
             display.setTextDatum(lgfx::top_left);
         }
-        display.setFont(&fonts::Font0);
-        display.setTextDatum(lgfx::top_center);
-        if (serverStatus.valid) {
-            char buf[64];
-            display.setTextColor(C_FORMAT, C_BG);
-            snprintf(buf, sizeof(buf), "LMS v%s  —  %d players  %d albums  %d songs",
-                     serverStatus.version.c_str(), serverStatus.playerCount,
-                     serverStatus.totalAlbums, serverStatus.totalSongs);
-            display.drawString(buf, SCREEN_W / 2, 208);
-        } else {
-            display.setTextColor(0xFF4040u, C_BG);
-            display.drawString((String("LMS unreachable — ") + appCfg.lms_ip).c_str(),
-                               SCREEN_W / 2, 208);
+        if (!hasTz2) {
+            display.setFont(&fonts::Font0);
+            display.setTextDatum(lgfx::top_center);
+            if (serverStatus.valid) {
+                char buf[64];
+                display.setTextColor(C_FORMAT, C_BG);
+                snprintf(buf, sizeof(buf), "LMS v%s  —  %d players  %d albums  %d songs",
+                         serverStatus.version.c_str(), serverStatus.playerCount,
+                         serverStatus.totalAlbums, serverStatus.totalSongs);
+                display.drawString(buf, SCREEN_W / 2, 208);
+            } else {
+                display.setTextColor(0xFF4040u, C_BG);
+                display.drawString((String("LMS unreachable — ") + appCfg.lms_ip).c_str(),
+                                   SCREEN_W / 2, 208);
+            }
+            display.setTextDatum(lgfx::top_left);
         }
-        display.setTextDatum(lgfx::top_left);
     } else {
         if (hasTime) {
             char timeBuf[9], dateBuf[12];
@@ -1192,10 +1275,34 @@ static void drawClockScreen() {
             display.setFont(&fonts::FreeSans24pt7b);
             display.setTextColor(C_CLOCK, C_BG);
             display.setTextDatum(lgfx::top_center);
-            display.drawString(timeBuf, SCREEN_W / 2, 30);
-            display.setFont(&fonts::FreeSans9pt7b);
+            display.drawString(timeBuf, SCREEN_W / 2, hasTz2 ? 2 : 30);
+            if (hasTz2) {
+                display.setFont(&fonts::Font2);
+            } else {
+                display.setFont(&fonts::FreeSans9pt7b);
+            }
             display.setTextColor(C_FORMAT, C_BG);
-            display.drawString(dateBuf, SCREEN_W / 2, 100);
+            display.drawString(dateBuf, SCREEN_W / 2, hasTz2 ? 42 : 100);
+
+            if (hasTz2) {
+                display.drawFastHLine(MARGIN, 62, SCREEN_W - 2 * MARGIN, C_SEPARATOR);
+                display.setFont(&fonts::Font2);
+                display.setTextColor(C_FORMAT, C_BG);
+                display.drawString(tzCityName(appCfg.timezone2).c_str(), SCREEN_W / 2, 66);
+
+                struct tm t2;
+                if (getTimeInZone(appCfg.timezone2, t2)) {
+                    char tz2Time[9], tz2Date[12];
+                    strftime(tz2Time, sizeof(tz2Time), "%H:%M:%S", &t2);
+                    strftime(tz2Date, sizeof(tz2Date), "%d/%m/%Y", &t2);
+                    display.setFont(&fonts::FreeSans18pt7b);
+                    display.setTextColor(C_CLOCK, C_BG);
+                    display.drawString(tz2Time, SCREEN_W / 2, 84);
+                    display.setFont(&fonts::Font2);
+                    display.setTextColor(C_FORMAT, C_BG);
+                    display.drawString(tz2Date, SCREEN_W / 2, 115);
+                }
+            }
             display.setTextDatum(lgfx::top_left);
         }
         display.setFont(&fonts::Font2);
@@ -1204,13 +1311,13 @@ static void drawClockScreen() {
             char buf[48];
             display.setTextColor(C_FORMAT, C_BG);
             snprintf(buf, sizeof(buf), "LMS v%s", serverStatus.version.c_str());
-            display.drawString(buf, MARGIN, 135);
+            display.drawString(buf, MARGIN, hasTz2 ? 140 : 135);
             snprintf(buf, sizeof(buf), "Players: %d  Albums: %d  Songs: %d",
                      serverStatus.playerCount, serverStatus.totalAlbums, serverStatus.totalSongs);
-            display.drawString(buf, MARGIN, 155);
+            display.drawString(buf, MARGIN, hasTz2 ? 156 : 155);
         } else {
             display.setTextColor(0xFF4040u, C_BG);
-            display.drawString((String("LMS unreachable — ") + appCfg.lms_ip).c_str(), MARGIN, 135);
+            display.drawString((String("LMS unreachable — ") + appCfg.lms_ip).c_str(), MARGIN, hasTz2 ? 140 : 135);
         }
     }
 }

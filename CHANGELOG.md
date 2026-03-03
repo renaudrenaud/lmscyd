@@ -20,6 +20,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.3.0] - 2026-03-03
+
+### Added
+- **Dual timezone display** — optional `timezone2` field in `config.json`; when set, both clocks are shown simultaneously on all clock screens (digital: large primary + smaller secondary with date; analog: primary clock face + secondary time below date); city name extracted from IANA string (e.g. `"Europe/Paris"` → `"Paris"`); configurable via Web Portal
+
+---
+
 ## [1.2.3] - 2026-03-03
 
 ### Added
