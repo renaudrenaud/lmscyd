@@ -221,6 +221,7 @@ static int   lastVolume       = -1;
 static int   lastSongId       = -1;
 static float lastElapsed      = -1;
 static bool  lastIsPlaying    = false;
+static int   lastRssiBars     = -1;
 static bool  fullRedrawNeeded = true;
 
 static unsigned long lastPoll    = 0;
@@ -401,6 +402,38 @@ static void drawBar(int x, int y, int w, int h,
     if (filled < w) display.fillRect(x + filled, y, w - filled, h, bg);
 }
 
+// Convertit un RSSI (dBm) en niveau 0-4
+static int rssiToBars(int rssi) {
+    if (rssi >= -55) return 4;
+    if (rssi >= -65) return 3;
+    if (rssi >= -75) return 2;
+    if (rssi >= -85) return 1;
+    return 0;
+}
+
+// Icône WiFi : 4 barres verticales bottom-alignées, actives ou grises
+static void drawWifiIcon(int x, int y, int bars) {
+    // bars = 0-4, chaque barre = 3px large, 1px d'écart, hauteur croissante
+    static const int heights[] = { 4, 7, 10, 13 };
+    static const uint32_t colors[] = {
+        0xFF2020u,   // 0 bar  → rouge  (dessiné sur la 1ère barre seulement)
+        0xFF5500u,   // 1 bar  → orange
+        0xFFAA00u,   // 2 bars → jaune
+        0x88CC00u,   // 3 bars → vert-jaune
+        0x00CC00u,   // 4 bars → vert
+    };
+    const uint32_t activeColor = colors[bars];
+    const uint32_t dimColor    = 0x303030u;
+    const int bottom = y + 13;   // base commune des barres
+
+    for (int i = 0; i < 4; i++) {
+        int bx = x + i * 4;
+        int bh = heights[i];
+        uint32_t c = (i < bars) ? activeColor : dimColor;
+        display.fillRect(bx, bottom - bh, 3, bh, c);
+    }
+}
+
 // Icône play (triangle) ou pause (deux barres)
 static void drawStatusIcon(int x, int y, bool playing) {
     display.fillRect(x, y, 18, 18, C_HEADER_BG);
@@ -416,8 +449,9 @@ static void drawStatusIcon(int x, int y, bool playing) {
 //  Dessin de l'en-tête (nom du player + icône + volume)
 // =============================================================================
 static void drawHeader(bool forceRedraw) {
+    int rssiBars = (WiFi.status() == WL_CONNECTED) ? rssiToBars(WiFi.RSSI()) : 0;
     if (!forceRedraw && playerStatus.volume == lastVolume &&
-        playerStatus.isPlaying == lastIsPlaying) return;
+        playerStatus.isPlaying == lastIsPlaying && rssiBars == lastRssiBars) return;
 
     display.fillRect(0, HDR_Y, SCREEN_W, HDR_H, C_HEADER_BG);
 
@@ -432,14 +466,18 @@ static void drawHeader(bool forceRedraw) {
     if (name.length() > 16) name = name.substring(0, 15) + "…";
     display.drawString(name.c_str(), 30, 5);
 
-    // Barre de volume (droite)
-    int volX = 230, volY = 7, volW = 60, volH = 10;
+    // Barre de volume (droite, avant l'icône WiFi)
+    int volX = 222, volY = 7, volW = 56, volH = 10;
     drawBar(volX, volY, volW, volH, playerStatus.volume / 100.0f, C_VOLUME, C_TRACK_BG);
     display.setFont(&fonts::Font0);
     display.setTextColor(C_FORMAT, C_HEADER_BG);
     char vbuf[5];
     snprintf(vbuf, sizeof(vbuf), "%3d%%", playerStatus.volume);
-    display.drawString(vbuf, 234, 18);
+    display.drawString(vbuf, 226, 18);
+
+    // Icône WiFi (4 barres, extrémité droite du header)
+    drawWifiIcon(301, 7, rssiBars);
+    lastRssiBars = rssiBars;
 
     // Sleep timer
     if (playerStatus.hasSleepTimer) {
@@ -1271,44 +1309,66 @@ static void handleShortTap(int16_t tx, int16_t ty) {
 
 // =============================================================================
 //  Gestion du tactile (long press → menu principal)
+//
+//  Machine d'états à 3 phases pour tolérer les parasites XPT2046 :
+//    TS_IDLE        : pas de contact
+//    TS_PRESSING    : contact en cours, accumulation du temps
+//    TS_PENDING_TAP : contact relâché, on attend TOUCH_GLITCH_MS avant de
+//                     confirmer le tap (si le contact revient → c'était un glitch)
 // =============================================================================
-static unsigned long lastTouchMs   = 0;
-static bool          touchActive   = false;
-static unsigned long touchDownMs   = 0;
-static int16_t       lastTx        = 0;
-static int16_t       lastTy        = 0;
-static const int     TOUCH_DEBOUNCE_MS = 400;
-static const int     LONG_PRESS_MS     = 1500;
+enum TouchState { TS_IDLE, TS_PRESSING, TS_PENDING_TAP };
+static TouchState    touchState  = TS_IDLE;
+static unsigned long touchDownMs = 0;   // quand le contact a commencé
+static unsigned long touchUpMs   = 0;   // quand le contact a été perdu
+static unsigned long lastTouchMs = 0;   // dernier tap confirmé (anti-rebond)
+static int16_t       lastTx      = 0;
+static int16_t       lastTy      = 0;
 
 static void handleTouch() {
     int16_t tx, ty;
     bool pressed = display.getTouch(&tx, &ty);
     unsigned long now = millis();
 
-    if (pressed) {
-        if (!touchActive) {
-            touchActive = true;
-            touchDownMs = now;
-        }
-        lastTx = tx;
-        lastTy = ty;
-
-        // Long press → ouvrir le menu (depuis n'importe quel écran sauf le menu lui-même)
-        if (currentScreen != SCR_HOME && now - touchDownMs >= LONG_PRESS_MS) {
-            touchActive = false;
-            touchDownMs = 0;
-            lastTouchMs = now;
-            enterScreen(SCR_HOME);
-        }
-    } else {
-        if (touchActive) {
-            touchActive = false;
-            unsigned long held = now - touchDownMs;
-            if (held < LONG_PRESS_MS && now - lastTouchMs >= TOUCH_DEBOUNCE_MS) {
-                lastTouchMs = now;
-                handleShortTap(lastTx, lastTy);
+    switch (touchState) {
+        case TS_IDLE:
+            if (pressed) {
+                touchDownMs = now;
+                touchState  = TS_PRESSING;
+                lastTx = tx;  lastTy = ty;
             }
-        }
+            break;
+
+        case TS_PRESSING:
+            if (pressed) {
+                lastTx = tx;  lastTy = ty;
+                // Long press → ouvrir le menu
+                if (currentScreen != SCR_HOME && now - touchDownMs >= LONG_PRESS_MS) {
+                    lastTouchMs = now;
+                    touchState  = TS_IDLE;
+                    enterScreen(SCR_HOME);
+                }
+            } else {
+                // Contact perdu : glitch ou vrai relâché ?
+                touchUpMs  = now;
+                touchState = TS_PENDING_TAP;
+            }
+            break;
+
+        case TS_PENDING_TAP:
+            if (pressed) {
+                // Contact revenu dans la fenêtre → c'était un glitch, on reprend
+                touchState = TS_PRESSING;
+                lastTx = tx;  lastTy = ty;
+            } else if (now - touchUpMs >= TOUCH_GLITCH_MS) {
+                // Vrai relâché : confirmer le tap court si applicable
+                unsigned long held = touchUpMs - touchDownMs;
+                if (held < LONG_PRESS_MS && now - lastTouchMs >= TOUCH_DEBOUNCE_MS) {
+                    lastTouchMs = now;
+                    handleShortTap(lastTx, lastTy);
+                }
+                touchState = TS_IDLE;
+            }
+            break;
     }
 }
 
@@ -1397,18 +1457,16 @@ void loop() {
         return;
     }
 
-    // --- Écran horloge : rafraîchir chaque seconde ---
+    // --- Écran horloge : rafraîchir chaque seconde (mais on continue pour poller LMS) ---
     if (currentScreen == SCR_CLOCK) {
         if (now - lastClock > 1000) {
             lastClock = now;
             drawClockScreen();
         }
-        delay(20);
-        return;
     }
 
     // --- Écrans de menu statiques : rien à faire ---
-    if (currentScreen != SCR_MAIN) {
+    if (currentScreen != SCR_MAIN && currentScreen != SCR_CLOCK) {
         delay(20);
         return;
     }
@@ -1436,7 +1494,16 @@ void loop() {
         PlayerStatus newPlayer;
         bool found = lms.findPlayer(appCfg.lms_player, newPlayer);
 
+        static int notFoundCount = 0;
+
         if (found && newPlayer.isPlaying) {
+            notFoundCount = 0;
+
+            // Si on était en horloge auto, retour à l'écran principal
+            if (currentScreen == SCR_CLOCK) {
+                enterScreen(SCR_MAIN);
+            }
+
             // songChanged OU données manquantes (fetch raté lors du démarrage / LMS indisponible)
             bool songChanged = (newPlayer.currentSongId != lastSongId)
                             || (!trackInfo.valid && newPlayer.currentSongId > 0)
@@ -1465,30 +1532,36 @@ void loop() {
             fullRedrawNeeded = false;
 
         } else if (found) {
-            // Player trouvé mais pas en lecture (pause/stop) → écran horloge
+            notFoundCount = 0;
+            // Player trouvé mais pas en lecture (pause/stop) → passer en horloge
             playerStatus = newPlayer;
-            if (lastIsPlaying || now - lastClock > 1000) {
-                lastClock        = now;
-                if (lastIsPlaying) clockNeedsFullRedraw = true;  // retour depuis lecture
-                lastIsPlaying    = false;
-                fullRedrawNeeded = true;
+            if (currentScreen == SCR_MAIN) {
+                lastSongId    = -1;
+                lastIsPlaying = false;
+                enterScreen(SCR_CLOCK);
+            }
+        } else {
+            // found == false : erreur réseau ou player disparu
+            if (++notFoundCount >= PLAYER_LOST_POLLS && currentScreen == SCR_MAIN) {
+                // Player introuvable depuis trop longtemps (éteint ?) → horloge
+                notFoundCount    = 0;
                 lastSongId       = -1;
-                drawIdleScreen();
+                lastIsPlaying    = false;
+                playerStatus     = PlayerStatus{};   // reset : isPlaying=false, valid=false
+                enterScreen(SCR_CLOCK);
             }
         }
-        // found == false : erreur réseau transitoire → on garde l'écran courant
+    }
+
+    // --- Fallback : SCR_MAIN sans lecture (LMS injoignable au démarrage) → horloge ---
+    if (currentScreen == SCR_MAIN && !playerStatus.isPlaying) {
+        enterScreen(SCR_CLOCK);
     }
 
     // --- Défilement du texte pendant la lecture ---
-    if (playerStatus.valid && playerStatus.isPlaying && !fullRedrawNeeded) {
+    if (currentScreen == SCR_MAIN && playerStatus.valid && playerStatus.isPlaying && !fullRedrawNeeded) {
         drawPlayingScreen(false);
         drawProgress(false);
-    }
-
-    // --- Horloge de veille (mise à jour chaque seconde) ---
-    if (!playerStatus.isPlaying && now - lastClock > 1000) {
-        lastClock = now;
-        drawIdleScreen();
     }
 
     delay(20);  // ~50 fps max

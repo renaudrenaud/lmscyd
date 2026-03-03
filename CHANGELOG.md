@@ -20,6 +20,30 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.2.3] - 2026-03-03
+
+### Added
+- **WiFi signal icon** — 4-bar icon in the top-right of the header; color goes from red (0 bars, < −85 dBm) to green (4 bars, ≥ −55 dBm); redrawn only when the bar level changes
+
+---
+
+## [1.2.2] - 2026-03-03
+
+### Fixed
+- **Long-press reliability** — touch handler rewritten as a 3-state machine (`IDLE` / `PRESSING` / `PENDING_TAP`); XPT2046 glitches (brief contact drops < 150 ms) no longer reset the long-press timer; threshold reduced from 1500 ms to 800 ms; short-tap confirmation delayed by `TOUCH_GLITCH_MS` to avoid spurious actions during a hold
+
+---
+
+## [1.2.1] - 2026-03-03
+
+### Changed
+- **Auto-switch to clock screen** — when no player is playing (pause or stop), the display automatically switches to `SCR_CLOCK`; playback resuming switches back to the main screen automatically
+
+### Fixed
+- **Player turned off / lost** — after `PLAYER_LOST_POLLS` (5) consecutive polls with no player found, the display switches to the clock screen instead of staying stuck on the last track info
+
+---
+
 ## [1.2.0] - 2026-03-01
 
 ### Added
