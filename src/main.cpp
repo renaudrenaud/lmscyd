@@ -6,6 +6,7 @@
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <time.h>
+#include <ctype.h>
 
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
@@ -207,6 +208,7 @@ static AppConfig appCfg;
 static LmsClient lms;
 
 static ServerStatus serverStatus;
+static unsigned long serverStatusAge = 0;  // millis() du dernier succès
 static PlayerStatus playerStatus;
 static TrackInfo    trackInfo;
 
@@ -227,7 +229,12 @@ static bool  fullRedrawNeeded = true;
 static unsigned long lastPoll    = 0;
 static unsigned long lastClock   = 0;
 
+// Ancre temps locale pour inférer elapsed entre deux polls LMS
+static float         g_elapsedAnchor   = 0;
+static unsigned long g_elapsedAnchorMs = 0;
+
 static bool      clockNeedsFullRedraw = true;
+static bool      clockPrevValid       = false;  // true si clockPrevT contient une heure valide
 static struct tm clockPrevT           = {};
 
 // Web portal
@@ -237,20 +244,28 @@ static DNSServer  g_dnsServer;
 // Cache de la pochette courante
 static uint8_t* g_coverBuf    = nullptr;
 static size_t   g_coverLen    = 0;
-static int      g_coverSongId = -2;   // -2 = jamais chargé
+static int      g_coverSongId = -1;   // -1 = jamais chargé (0 = morceau valide, >0 = morceau avec ID)
 static char     g_coverErr[80] = "";  // raison d'échec (debug)
 
 // =============================================================================
 //  Pochette d'album
 // =============================================================================
 static void downloadCover(int songId) {
+    // Radio (songId == 0) : pas de pochette, on marque comme "traité" sans erreur
+    if (songId == 0) {
+        if (g_coverBuf) { free(g_coverBuf); g_coverBuf = nullptr; g_coverLen = 0; }
+        g_coverSongId = 0;
+        g_coverErr[0] = '\0';
+        return;
+    }
+
     if (g_coverSongId == songId && g_coverBuf) return;   // déjà en cache
 
     if (g_coverBuf) { free(g_coverBuf); g_coverBuf = nullptr; g_coverLen = 0; }
     g_coverSongId = songId;
     g_coverErr[0] = '\0';
 
-    if (songId <= 0 || WiFi.status() != WL_CONNECTED) {
+    if (WiFi.status() != WL_CONNECTED) {
         snprintf(g_coverErr, sizeof(g_coverErr), "No WiFi");
         return;
     }
@@ -291,6 +306,8 @@ static void downloadCover(int songId) {
     WiFiClient* stream = http.getStreamPtr();
     size_t total = 0;
     uint32_t t = millis();
+    bool downloadError = false;
+
     while (millis() - t < 4000 && http.connected()) {
         int avail = stream->available();
         if (avail > 0) {
@@ -299,11 +316,13 @@ static void downloadCover(int songId) {
                 size_t newLen = min(allocLen * 2, MAX_COVER);
                 if (newLen <= allocLen) {
                     snprintf(g_coverErr, sizeof(g_coverErr), "Cap 64KB cl=%d rd=%u", contentLen, (unsigned)total);
+                    downloadError = true;
                     break;
                 }
                 uint8_t* tmp = (uint8_t*)realloc(buf, newLen);
                 if (!tmp) {
                     snprintf(g_coverErr, sizeof(g_coverErr), "realloc fail %uB", (unsigned)newLen);
+                    downloadError = true;
                     break;
                 }
                 buf = tmp;
@@ -320,7 +339,7 @@ static void downloadCover(int songId) {
     }
     http.end();
 
-    if (total > 0 && g_coverErr[0] == '\0') {
+    if (!downloadError && total > 0 && g_coverErr[0] == '\0') {
         g_coverBuf = buf;
         g_coverLen = total;
     } else {
@@ -568,18 +587,31 @@ static void drawHeader(bool forceRedraw) {
 }
 
 // =============================================================================
+//  Elapsed inféré localement entre deux polls LMS
+// =============================================================================
+static float inferredElapsed() {
+    if (!playerStatus.isPlaying || g_elapsedAnchorMs == 0)
+        return playerStatus.elapsed;
+    float v = g_elapsedAnchor + (millis() - g_elapsedAnchorMs) / 1000.0f;
+    if (trackInfo.valid && trackInfo.duration > 0 && v > trackInfo.duration)
+        v = trackInfo.duration;
+    return v;
+}
+
+// =============================================================================
 //  Dessin de la barre de progression + infos de piste
 // =============================================================================
 static void drawProgress(bool forceRedraw) {
-    if (!forceRedraw && (int)playerStatus.elapsed == (int)lastElapsed) return;
-    lastElapsed = playerStatus.elapsed;
+    float elapsed = inferredElapsed();
+    if (!forceRedraw && fabsf(elapsed - lastElapsed) < 0.5f) return;
+    lastElapsed = elapsed;
 
     display.drawFastHLine(0, PROG_Y, SCREEN_W, C_SEPARATOR);
 
     // Temps écoulé / total
-    String elapsed  = formatTime(playerStatus.elapsed);
-    String duration = trackInfo.valid ? formatTime(trackInfo.duration) : "--:--";
-    String pos      = elapsed + " / " + duration;
+    String elapsedStr = formatTime(elapsed);
+    String duration   = trackInfo.valid ? formatTime(trackInfo.duration) : "--:--";
+    String pos        = elapsedStr + " / " + duration;
 
     display.setFont(&fonts::Font2);
     display.setTextColor(C_FORMAT, C_BG);
@@ -598,7 +630,7 @@ static void drawProgress(bool forceRedraw) {
     // Barre de progression
     float ratio = 0;
     if (trackInfo.valid && trackInfo.duration > 0)
-        ratio = playerStatus.elapsed / trackInfo.duration;
+        ratio = elapsed / trackInfo.duration;
     drawBar(MARGIN, PROG_Y + 20, SCREEN_W - 2 * MARGIN, 10,
             ratio, C_PROGRESS, C_TRACK_BG);
 }
@@ -716,17 +748,60 @@ static String tzCityName(const char* iana) {
     return String(slash ? slash + 1 : iana);
 }
 
+// Décalage horaire en secondes pour un fuseau POSIX donné.
+// Parse une chaîne comme "CET-1CEST..." ou "UTC0" ou "PST8PDT..."
+// Retourne le décalage standard (ignore DST pour simplifier).
+static int32_t posixTzToOffset(const char* posix) {
+    // Formats supportés :
+    // "UTC0", "GMT0" → offset = 0
+    // "CET-1..." → offset = +1h = 3600s (le signe est inversé dans la norme POSIX)
+    // "PST8..." → offset = -8h = -28800s
+    // "EET-2..." → offset = +2h = 7200s
+    // "IST-5:30" → offset = +5h30 = 19800s
+    const char* p = posix;
+    // Skip le nom du fuseau (lettres)
+    while (*p && (isalpha(*p) || *p == '-')) p++;
+    if (!*p) return 0;
+
+    // Lire le décalage heures:minutes optionnelles
+    int sign = (*p == '-') ? -1 : 1;  // signe POSIX inversé
+    if (*p == '-' || *p == '+') p++;
+
+    int hours = atoi(p);
+    while (*p && isdigit(*p)) p++;
+
+    int minutes = 0;
+    if (*p == ':') {
+        p++;
+        minutes = atoi(p);
+    }
+
+    int offsetSec = sign * (hours * 3600 + minutes * 60);
+    // Inverser le signe pour obtenir le décalage réel (UTC+1 = +3600)
+    return -offsetSec;
+}
+
 // Retourne l'heure locale dans un fuseau IANA quelconque.
-// Change temporairement TZ puis restaure le fuseau principal.
+// Utilise un calcul manuel sans modifier TZ global (thread-safe).
 static bool getTimeInZone(const char* iana, struct tm& t) {
     time_t now;
     time(&now);
     if (now < 1000000) return false;   // NTP pas encore synchronisé
-    setenv("TZ", ianaToposix(iana), 1);
-    tzset();
-    localtime_r(&now, &t);
-    setenv("TZ", ianaToposix(appCfg.timezone), 1);
-    tzset();
+
+    // Obtenir l'heure UTC
+    struct tm utc;
+    gmtime_r(&now, &utc);
+
+    // Convertir IANA → POSIX → offset
+    const char* posix = ianaToposix(iana);
+
+    // Calculer l'offset depuis la chaîne POSIX
+    int32_t offset = posixTzToOffset(posix);
+
+    // Appliquer l'offset à l'heure UTC
+    time_t localTime = now + offset;
+    gmtime_r(&localTime, &t);
+
     return true;
 }
 
@@ -795,7 +870,7 @@ static void drawAnalogClockHands(const struct tm& t, uint32_t handColor, uint32_
 // =============================================================================
 static void drawIdleScreen() {
     struct tm t;
-    bool hasTime  = getLocalTime(&t);
+    bool hasTime  = getLocalTime(&t, 10);  // timeout 10ms pour ne pas bloquer
     bool isAnalog = (strcmp(appCfg.clock_style, "analog") == 0);
     bool prevValid = !clockNeedsFullRedraw;
     bool hasTz2   = (appCfg.timezone2[0] != '\0');
@@ -810,11 +885,12 @@ static void drawIdleScreen() {
     if (isAnalog) {
         // ── Horloge analogique — mise à jour des aiguilles sans fillScreen ──
         if (hasTime) {
-            if (prevValid)
+            if (clockPrevValid)
                 drawAnalogClockHands(clockPrevT, C_BG, C_BG); // efface anciennes aiguilles
             drawAnalogClockFace();                              // restaure le cadran
             drawAnalogClockHands(t, C_TITLE, C_VOLUME);        // dessine les nouvelles
             clockPrevT = t;
+            clockPrevValid = true;
 
             char dateBuf[12];
             strftime(dateBuf, sizeof(dateBuf), "%d/%m/%Y", &t);
@@ -1005,6 +1081,7 @@ button:hover{background:#003a9e}</style></head><body>
 <select name="clock_style" style="width:100%;padding:.4em;border:1px solid #ccc;border-radius:3px">
 <option value="digital"%SEL_DIG%>Digital</option>
 <option value="analog"%SEL_ANA%>Analog</option>
+<option value="casio"%SEL_CASIO%>G-Shock</option>
 </select>
 <button type="submit">Save &amp; Reboot</button>
 </form></body></html>)rawhtml";
@@ -1052,8 +1129,10 @@ static void portalHandleRoot() {
     html.replace("%TZ%",     String(appCfg.timezone));
     html.replace("%TZ2%",    String(appCfg.timezone2));
     bool isAnalog = (strcmp(appCfg.clock_style, "analog") == 0);
-    html.replace("%SEL_DIG%", isAnalog ? ""          : " selected");
-    html.replace("%SEL_ANA%", isAnalog ? " selected" : "");
+    bool isCasio  = (strcmp(appCfg.clock_style, "casio")  == 0);
+    html.replace("%SEL_DIG%",   (!isAnalog && !isCasio) ? " selected" : "");
+    html.replace("%SEL_ANA%",   isAnalog                ? " selected" : "");
+    html.replace("%SEL_CASIO%", isCasio                 ? " selected" : "");
     g_portalServer->send(200, "text/html; charset=utf-8", html);
 }
 
@@ -1080,7 +1159,7 @@ static void portalHandleSave() {
     strlcpy(appCfg.timezone,   tz.c_str(),     sizeof(appCfg.timezone));
     strlcpy(appCfg.timezone2,  tz2.c_str(),    sizeof(appCfg.timezone2));
     String cs = g_portalServer->arg("clock_style");
-    if (cs == "analog" || cs == "digital")
+    if (cs == "analog" || cs == "digital" || cs == "casio")
         strlcpy(appCfg.clock_style, cs.c_str(), sizeof(appCfg.clock_style));
 
     if (saveAppConfig(appCfg)) {
@@ -1265,38 +1344,160 @@ static void drawInfoPlayersScreen() {
 }
 
 // =============================================================================
+//  Horloge style G-SHOCK DW-5600 (7 segments)
+// =============================================================================
+// Encodage 7 segments : bit0=a(haut) bit1=b(haut-D) bit2=c(bas-D)
+//                       bit3=d(bas)  bit4=e(bas-G)  bit5=f(haut-G) bit6=g(mid)
+static const uint8_t SEG7_DIGITS[10] = {
+    0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F
+};
+
+static void drawSeg7(int x, int y, int W, int H, int T,
+                     uint8_t segs, uint32_t onC, uint32_t offC) {
+    int hh = H / 2;
+    display.fillRect(x + T,     y,            W - 2*T, T,      (segs & 0x01) ? onC : offC); // a haut
+    display.fillRect(x + W - T, y + T,        T,       hh - T, (segs & 0x02) ? onC : offC); // b haut-D
+    display.fillRect(x + W - T, y + hh,       T,       hh - T, (segs & 0x04) ? onC : offC); // c bas-D
+    display.fillRect(x + T,     y + H - T,    W - 2*T, T,      (segs & 0x08) ? onC : offC); // d bas
+    display.fillRect(x,         y + hh,       T,       hh - T, (segs & 0x10) ? onC : offC); // e bas-G
+    display.fillRect(x,         y + T,        T,       hh - T, (segs & 0x20) ? onC : offC); // f haut-G
+    display.fillRect(x + T,     y + hh - T/2, W - 2*T, T,      (segs & 0x40) ? onC : offC); // g mid
+}
+
+// fullRedraw=true  : dessine fond + éléments statiques (boîtier, bordure LCD…)
+// fullRedraw=false : met à jour uniquement les éléments dynamiques (heure)
+static void drawGShockClock(bool fullRedraw) {
+    // Palette fidèle au DW-5600 : boîtier noir pur, LCD gris clair positif
+    static const uint32_t C_GBODY = 0x080808u;  // boîtier quasi-noir
+    static const uint32_t C_GLCD  = 0xC2CDB5u;  // fond LCD gris-vert clair (positif)
+    static const uint32_t C_GON   = 0x141E08u;  // segment allumé (vert très sombre)
+    static const uint32_t C_GOFF  = 0xA4AE96u;  // segment éteint (légèrement visible)
+    static const uint32_t C_GBORD = 0x040404u;  // liseré LCD
+
+    // 18px de boîtier en haut pour "PROTECTION", LCD de y=18 à y=214
+    static const int LX = 10, LY = 18, LW = 300, LH = 196;
+
+    struct tm t;
+    bool hasTime = getLocalTime(&t, 10);
+
+    if (fullRedraw) {
+        // Boîtier noir (zone au-dessus de la nav bar)
+        display.fillRect(0, 0, SCREEN_W, SCREEN_H - 22, C_GBODY);
+
+        // "PROTECTION" gravé dans le boîtier en haut
+        display.setFont(&fonts::Font0);
+        display.setTextColor(0x363636u, C_GBODY);
+        display.setTextDatum(lgfx::top_center);
+        display.drawString("PROTECTION", SCREEN_W / 2, 5);
+        display.setTextDatum(lgfx::top_left);
+
+        // Panneau LCD avec coins arrondis (fidèle au DW-5600)
+        display.fillRoundRect(LX,     LY,     LW,     LH,     8, C_GBORD);
+        display.fillRoundRect(LX + 2, LY + 2, LW - 4, LH - 4, 6, C_GLCD);
+
+        // Ligne de séparation de la bande info
+        display.drawFastHLine(LX + 6, LY + 28, LW - 12, C_GOFF);
+    }
+
+    if (!hasTime) return;
+
+    // ── Bande info supérieure ───────────────────────────────────────────────
+    // Gauche : jour + indicateur AM/PM (comme "S U" + "PM" sur la vraie montre)
+    // Droite : heure au format 12h (comme "6:30" sur la vraie montre)
+    static const char* DAYS[] = { "SUN","MON","TUE","WED","THU","FRI","SAT" };
+    bool isPM = (t.tm_hour >= 12);
+    int  h12  = t.tm_hour % 12;
+    if (h12 == 0) h12 = 12;
+    char h12buf[6];
+    snprintf(h12buf, sizeof(h12buf), "%d:%02d", h12, t.tm_min);
+
+    display.setFont(&fonts::Font2);
+    display.setTextColor(C_GON, C_GLCD);
+    display.setTextDatum(lgfx::top_left);
+    display.drawString(DAYS[t.tm_wday], LX + 6, LY + 4);
+    display.setFont(&fonts::Font0);
+    display.drawString(isPM ? "PM" : "AM", LX + 6, LY + 17);
+    display.setFont(&fonts::Font2);
+    display.setTextDatum(lgfx::top_right);
+    display.drawString(h12buf, LX + LW - 6, LY + 4);
+    display.setTextDatum(lgfx::top_left);
+
+    // ── Heure principale HH:MM (grands 7 segments très gras) ───────────────
+    // DW=54 DH=100 DT=11 | gap=6 | colon=16
+    // Largeur totale : 54+6+54+16+54+6+54 = 244 px
+    // LCD inner width = LW-4=296, dx = LX+2+(296-244)/2 = 12+26 = 38
+    const int DW = 54, DH = 100, DT = 11, DG = 6, CW = 16;
+    const int dx = LX + 2 + (LW - 4 - (DW + DG + DW + CW + DW + DG + DW)) / 2;  // 38
+    const int dy = LY + 32;  // 50
+
+    drawSeg7(dx,                            dy, DW, DH, DT, SEG7_DIGITS[t.tm_hour / 10], C_GON, C_GOFF);
+    drawSeg7(dx + DW + DG,                  dy, DW, DH, DT, SEG7_DIGITS[t.tm_hour % 10], C_GON, C_GOFF);
+    // Deux-points : cercles remplis (plus fidèle au DW-5600 que des carrés)
+    int colCX = dx + DW + DG + DW + CW / 2;  // 38+54+6+54+8 = 160 = centre écran
+    display.fillCircle(colCX, dy + DH / 3,       7, C_GON);
+    display.fillCircle(colCX, dy + 2 * DH / 3,   7, C_GON);
+    drawSeg7(dx + DW + DG + DW + CW,        dy, DW, DH, DT, SEG7_DIGITS[t.tm_min / 10], C_GON, C_GOFF);
+    drawSeg7(dx + DW + DG + DW + CW + DW + DG, dy, DW, DH, DT, SEG7_DIGITS[t.tm_min % 10], C_GON, C_GOFF);
+
+    // ── Secondes (petits 7 segments) ───────────────────────────────────────
+    const int SW = 24, SH = 38, ST = 5, SG = 4;
+    const int sy = dy + DH + 7;  // 157
+    const int sx = SCREEN_W / 2 - (SW + SG + SW) / 2;
+    drawSeg7(sx,           sy, SW, SH, ST, SEG7_DIGITS[t.tm_sec / 10], C_GON, C_GOFF);
+    drawSeg7(sx + SW + SG, sy, SW, SH, ST, SEG7_DIGITS[t.tm_sec % 10], C_GON, C_GOFF);
+
+    // ── "CASIO" à l'intérieur du LCD (comme sur la vraie montre) ───────────
+    display.setFont(&fonts::Font2);
+    display.setTextColor(C_GON, C_GLCD);
+    display.setTextDatum(lgfx::top_center);
+    display.drawString("CASIO", SCREEN_W / 2, sy + SH + 4);  // ~199
+    display.setTextDatum(lgfx::top_left);
+}
+
+// =============================================================================
 //  Écran horloge sélectionnable (avec bouton NEXT pour cycler les styles)
 // =============================================================================
 static void drawClockScreen() {
-    struct tm t;
-    bool hasTime  = getLocalTime(&t);
     bool isAnalog = (strcmp(appCfg.clock_style, "analog") == 0);
-    bool prevValid = !clockNeedsFullRedraw;
+    bool isCasio  = (strcmp(appCfg.clock_style, "casio")  == 0);
     bool hasTz2   = (appCfg.timezone2[0] != '\0');
 
     if (clockNeedsFullRedraw) {
         display.fillScreen(C_BG);
         clockNeedsFullRedraw = false;
 
-        // Barre inférieure dessinée une seule fois (statique)
+        if (isCasio) {
+            drawGShockClock(true);
+        }
+
+        // Barre inférieure (commune à tous les styles)
         display.drawFastHLine(0, SCREEN_H - 22, SCREEN_W, C_SEPARATOR);
         display.setFont(&fonts::Font2);
         display.setTextColor(C_FORMAT, C_BG);
         display.setTextDatum(lgfx::top_left);
-        display.drawString(isAnalog ? "Analog" : "Digital", MARGIN, SCREEN_H - 16);
+        display.drawString(isAnalog ? "Analog" : (isCasio ? "G-Shock" : "Digital"), MARGIN, SCREEN_H - 16);
         display.setTextColor(C_ALBUM, C_BG);
         display.setTextDatum(lgfx::top_right);
         display.drawString("NEXT >", SCREEN_W - MARGIN, SCREEN_H - 16);
         display.setTextDatum(lgfx::top_left);
     }
 
+    if (isCasio) {
+        drawGShockClock(false);
+        return;
+    }
+
+    struct tm t;
+    bool hasTime = getLocalTime(&t, 10);
+
     if (isAnalog) {
         if (hasTime) {
-            if (prevValid)
+            if (clockPrevValid)
                 drawAnalogClockHands(clockPrevT, C_BG, C_BG); // efface anciennes aiguilles
             drawAnalogClockFace();                              // restaure le cadran
             drawAnalogClockHands(t, C_TITLE, C_VOLUME);        // dessine les nouvelles
             clockPrevT = t;
+            clockPrevValid = true;
 
             char dateBuf[12];
             strftime(dateBuf, sizeof(dateBuf), "%d/%m/%Y", &t);
@@ -1392,10 +1593,12 @@ static void drawClockScreen() {
 }
 
 static void cycleClockStyle() {
-    if (strcmp(appCfg.clock_style, "analog") == 0)
-        strlcpy(appCfg.clock_style, "digital", sizeof(appCfg.clock_style));
-    else
+    if (strcmp(appCfg.clock_style, "digital") == 0)
         strlcpy(appCfg.clock_style, "analog", sizeof(appCfg.clock_style));
+    else if (strcmp(appCfg.clock_style, "analog") == 0)
+        strlcpy(appCfg.clock_style, "casio", sizeof(appCfg.clock_style));
+    else
+        strlcpy(appCfg.clock_style, "digital", sizeof(appCfg.clock_style));
     saveAppConfig(appCfg);
     clockNeedsFullRedraw = true;
     drawClockScreen();
@@ -1413,6 +1616,7 @@ static void enterScreen(Screen s) {
             fullRedrawNeeded     = true;
             lastIsPlaying        = false;
             clockNeedsFullRedraw = true;
+            clockPrevValid       = false;  // reset pour prochain entrée clock
             display.fillScreen(C_BG);
             break;
         case SCR_HOME:
@@ -1421,6 +1625,7 @@ static void enterScreen(Screen s) {
         case SCR_CLOCK:
             lastClock            = 0;   // forcer le dessin immédiat dans loop()
             clockNeedsFullRedraw = true;
+            clockPrevValid       = false;  // force premier dessin sans effacer
             drawClockScreen();
             break;
         case SCR_INFO_SRV:
@@ -1657,14 +1862,28 @@ void loop() {
         return;
     }
 
-    // --- Interrogation du serveur LMS ---
-    if (now - lastPoll >= POLL_INTERVAL_MS) {
+    // --- Interrogation du serveur LMS (polling adaptatif) ---
+    {
+        float  _inf  = inferredElapsed();
+        float  _rem  = (trackInfo.valid && trackInfo.duration > 0)
+                       ? trackInfo.duration - _inf : -1.0f;
+        bool   _near = !playerStatus.isPlaying
+                    || _inf < POLL_BOUNDARY_S
+                    || (_rem >= 0 && _rem < POLL_BOUNDARY_S);
+        if (now - lastPoll >= (_near ? POLL_FAST_MS : POLL_MID_MS)) {
         lastPoll = now;
 
         static unsigned long lastServerPoll = 0;
         if (now - lastServerPoll > 60000 || !serverStatus.valid) {
             lastServerPoll = now;
-            serverStatus = lms.getServerStatus();
+            ServerStatus newStatus = lms.getServerStatus();
+            if (newStatus.valid) {
+                serverStatus = newStatus;
+                serverStatusAge = now;
+            } else if (serverStatusAge > 0 && now - serverStatusAge > 120000) {
+                // Dernier succès > 2 min → on invalide pour afficher "unreachable"
+                serverStatus.valid = false;
+            }
         }
 
         PlayerStatus newPlayer;
@@ -1703,7 +1922,9 @@ void loop() {
                 fullRedrawNeeded = true;
             }
 
-            playerStatus = newPlayer;
+            playerStatus      = newPlayer;
+            g_elapsedAnchor   = newPlayer.elapsed;
+            g_elapsedAnchorMs = now;
             drawPlayingScreen(fullRedrawNeeded);
             fullRedrawNeeded = false;
 
@@ -1727,6 +1948,7 @@ void loop() {
                 enterScreen(SCR_CLOCK);
             }
         }
+        } // if (now - lastPoll >= interval)
     }
 
     // --- Fallback : SCR_MAIN sans lecture (LMS injoignable au démarrage) → horloge ---
@@ -1734,10 +1956,9 @@ void loop() {
         enterScreen(SCR_CLOCK);
     }
 
-    // --- Défilement du texte pendant la lecture ---
+    // --- Défilement du texte et barre de progression (rafraîchissement local) ---
     if (currentScreen == SCR_MAIN && playerStatus.valid && playerStatus.isPlaying && !fullRedrawNeeded) {
         drawPlayingScreen(false);
-        drawProgress(false);
     }
 
     delay(20);  // ~50 fps max

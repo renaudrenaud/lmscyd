@@ -14,9 +14,39 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **Smooth track transition** — quick black fade between tracks instead of hard redraw
 - **Volume swipe** — vertical swipe gesture on the touch screen to raise/lower volume
 - **Touch visual feedback** — brief highlight when a touch zone is activated
-- **Interpolated elapsed time** — increment the progress bar locally between LMS polls for smoother animation
 - **Player selection screen** — if `lms_player` is empty, show available players at startup and let the user pick one by touch
 - **Player name on idle screen** — display the followed player's name on the clock screen
+
+---
+
+## [1.5.1] - 2026-03-07
+
+### Changed
+- **Adaptive LMS polling** — poll every 2 s near track boundaries (first/last 8 s) and every 12 s mid-track, instead of a fixed 1 s interval; dramatically reduces network load and display freezes
+- **Local elapsed inference** — progress bar and time counter advance locally between polls using a `millis()` anchor set when the LMS response arrives; bar updates every ~0.5 s instead of ~1+ s
+- **Display refresh decoupled from polling** — text scrolling and progress bar update every 20 ms (50 fps) independently of LMS network round-trips
+
+---
+
+## [1.5.0] - 2026-03-07
+
+### Added
+- **G-Shock clock style** — third clock style inspired by the Casio DW-5600 G-SHOCK: charcoal bezel, olive-green LCD panel, large 7-segment HH:MM, smaller seconds digits, day of week, and date; cycles via the NEXT button alongside Digital and Analog; also selectable from the Web Portal
+
+---
+
+## [1.4.0] - 2026-03-07
+
+### Fixed
+- **Radio stream cover art** — `songId == 0` (radio) now correctly skips cover download without error message; cache is properly reset
+- **Clock analog hands artifacts** — first draw no longer erases hands at wrong position (00:00:00); `clockPrevValid` flag ensures clean entry
+- **NTP blocking call** — `getLocalTime()` now uses 10ms timeout to prevent UI freeze when NTP is not synced
+- **Stale server status** — `serverStatus.valid` is invalidated after 2 minutes without successful poll; "Server unreachable" now displays correctly
+- **Timezone race condition** — `getTimeInZone()` no longer uses `setenv()`/`tzset()` which could affect other FreeRTOS tasks; manual offset calculation is now thread-safe
+- **Memory leak in cover download** — buffer is always freed on error paths (cap reached, realloc failure)
+
+### Changed
+- **Cover cache initialization** — `g_coverSongId` initialized to `-1` (never loaded) instead of `-2`
 
 ---
 
