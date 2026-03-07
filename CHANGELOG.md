@@ -20,6 +20,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.3.1] - 2026-03-07
+
+### Fixed
+- **Album art missing on some tracks** — LMS can return cover art as PNG instead of JPEG depending on the source file; `drawCover` now detects the format from the magic bytes (`FF D8` = JPEG, `89 50 4E 47` = PNG) and calls `drawJpg` or `drawPng` accordingly
+- **Cover buffer cap and chunked transfers** — increased buffer cap from 30 KB to 64 KB; added dynamic `realloc` growth for chunked HTTP responses to avoid silent truncation
+- **Partial download stored as valid cover** — if an error occurs mid-download, the partial buffer is now discarded instead of being passed to `drawJpg`
+- **Retry blocked after failed download** — fixed early-return guard so a failed cover fetch is retried on the next poll cycle
+
+---
+
 ## [1.3.0] - 2026-03-03
 
 ### Added

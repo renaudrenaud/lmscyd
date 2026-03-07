@@ -238,17 +238,22 @@ static DNSServer  g_dnsServer;
 static uint8_t* g_coverBuf    = nullptr;
 static size_t   g_coverLen    = 0;
 static int      g_coverSongId = -2;   // -2 = jamais chargé
+static char     g_coverErr[80] = "";  // raison d'échec (debug)
 
 // =============================================================================
 //  Pochette d'album
 // =============================================================================
 static void downloadCover(int songId) {
-    if (g_coverSongId == songId) return;   // déjà en cache
+    if (g_coverSongId == songId && g_coverBuf) return;   // déjà en cache
 
     if (g_coverBuf) { free(g_coverBuf); g_coverBuf = nullptr; g_coverLen = 0; }
     g_coverSongId = songId;
+    g_coverErr[0] = '\0';
 
-    if (songId <= 0 || WiFi.status() != WL_CONNECTED) return;
+    if (songId <= 0 || WiFi.status() != WL_CONNECTED) {
+        snprintf(g_coverErr, sizeof(g_coverErr), "No WiFi");
+        return;
+    }
 
     String url = String("http://") + appCfg.lms_ip + ":" + appCfg.lms_port
                + "/music/" + songId + "/cover_" + ART_W + "x" + ART_H + "_p";
@@ -258,52 +263,116 @@ static void downloadCover(int songId) {
     http.begin(wifiClient, url);
     http.setTimeout(4000);
 
-    if (http.GET() != 200) { http.end(); return; }
+    int httpCode = http.GET();
+    if (httpCode != 200) {
+        snprintf(g_coverErr, sizeof(g_coverErr), "HTTP %d", httpCode);
+        http.end();
+        return;
+    }
 
     int contentLen = http.getSize();
-    const int MAX_COVER = 30720;   // 30 KB
+    const size_t MAX_COVER = 65536;   // 64 KB
 
-    if (contentLen > MAX_COVER) { http.end(); return; }
+    if (contentLen > (int)MAX_COVER) {
+        snprintf(g_coverErr, sizeof(g_coverErr), "Too large: %d B", contentLen);
+        http.end();
+        return;
+    }
 
-    size_t allocLen = (contentLen > 0) ? (size_t)contentLen : (size_t)MAX_COVER;
+    // Pour les transferts chunked (contentLen == -1), on part sur 16 KB et on realloc si besoin
+    size_t allocLen = (contentLen > 0) ? (size_t)contentLen : 16384;
     uint8_t* buf = (uint8_t*)malloc(allocLen);
-    if (!buf) { http.end(); return; }
+    if (!buf) {
+        snprintf(g_coverErr, sizeof(g_coverErr), "malloc fail %uB", (unsigned)allocLen);
+        http.end();
+        return;
+    }
 
     WiFiClient* stream = http.getStreamPtr();
     size_t total = 0;
     uint32_t t = millis();
-    while (millis() - t < 4000 && total < allocLen && http.connected()) {
+    while (millis() - t < 4000 && http.connected()) {
         int avail = stream->available();
         if (avail > 0) {
+            // Agrandir le buffer si nécessaire (cas chunked)
+            if (total + (size_t)avail > allocLen) {
+                size_t newLen = min(allocLen * 2, MAX_COVER);
+                if (newLen <= allocLen) {
+                    snprintf(g_coverErr, sizeof(g_coverErr), "Cap 64KB cl=%d rd=%u", contentLen, (unsigned)total);
+                    break;
+                }
+                uint8_t* tmp = (uint8_t*)realloc(buf, newLen);
+                if (!tmp) {
+                    snprintf(g_coverErr, sizeof(g_coverErr), "realloc fail %uB", (unsigned)newLen);
+                    break;
+                }
+                buf = tmp;
+                allocLen = newLen;
+            }
             int rd = stream->readBytes(buf + total,
                          (int)min((size_t)avail, allocLen - total));
             total += rd;
             if (contentLen > 0 && total >= (size_t)contentLen) break;
+        } else if (contentLen > 0 && total >= (size_t)contentLen) {
+            break;
         }
         delay(1);
     }
     http.end();
 
-    if (total > 0) {
+    if (total > 0 && g_coverErr[0] == '\0') {
         g_coverBuf = buf;
         g_coverLen = total;
     } else {
+        if (g_coverErr[0] == '\0')
+            snprintf(g_coverErr, sizeof(g_coverErr), "0 bytes cl=%d", contentLen);
         free(buf);
     }
 }
 
+static void drawCoverError(const char* msg) {
+    display.fillRect(ART_X, ART_Y, ART_W, ART_H, C_TRACK_BG);
+    display.drawRect(ART_X + 4, ART_Y + 4, ART_W - 8, ART_H - 8, C_SEPARATOR);
+    display.setFont(&fonts::Font0);   // 6×8 px
+    display.setTextColor(TFT_YELLOW, C_TRACK_BG);
+    display.setTextDatum(lgfx::top_left);
+    // Découpe le message en lignes de ~18 chars (ART_W=120, font=6px)
+    const int LINE_W = 18;
+    int y = ART_Y + 6;
+    const char* p = msg;
+    char line[LINE_W + 1];
+    while (*p && y < ART_Y + ART_H - 8) {
+        int len = 0;
+        while (p[len] && len < LINE_W) len++;
+        memcpy(line, p, len); line[len] = '\0';
+        display.drawString(line, ART_X + 6, y);
+        y += 10;
+        p += len;
+    }
+    display.setTextDatum(lgfx::top_left);
+}
+
 static void drawCover() {
     if (g_coverBuf && g_coverLen > 0) {
-        display.drawJpg(g_coverBuf, g_coverLen, ART_X, ART_Y, ART_W, ART_H);
+        bool ok = false;
+        bool isPng = (g_coverLen >= 4 &&
+                      g_coverBuf[0] == 0x89 && g_coverBuf[1] == 0x50 &&
+                      g_coverBuf[2] == 0x4E && g_coverBuf[3] == 0x47);
+        if (isPng)
+            ok = display.drawPng(g_coverBuf, g_coverLen, ART_X, ART_Y, ART_W, ART_H);
+        else
+            ok = display.drawJpg(g_coverBuf, g_coverLen, ART_X, ART_Y, ART_W, ART_H);
+        if (!ok) {
+            char msg[80];
+            snprintf(msg, sizeof(msg), "%s err %uB hdr:%02X%02X",
+                     isPng ? "PNG" : "JPG", (unsigned)g_coverLen,
+                     g_coverBuf[0], g_coverBuf[1]);
+            drawCoverError(msg);
+        }
     } else {
-        // Placeholder : carré sombre avec cadre
-        display.fillRect(ART_X, ART_Y, ART_W, ART_H, C_TRACK_BG);
-        display.drawRect(ART_X + 4, ART_Y + 4, ART_W - 8, ART_H - 8, C_SEPARATOR);
-        display.setFont(&fonts::FreeSans12pt7b);
-        display.setTextColor(C_SEPARATOR, C_TRACK_BG);
-        display.setTextDatum(lgfx::middle_center);
-        display.drawString("?", ART_X + ART_W / 2, ART_Y + ART_H / 2);
-        display.setTextDatum(lgfx::top_left);
+        // Placeholder : erreur download ou pas encore chargé
+        const char* msg = (g_coverErr[0] != '\0') ? g_coverErr : "no cover";
+        drawCoverError(msg);
     }
     // Séparateur vertical pochette / texte
     display.drawFastVLine(ART_X + ART_W + 1, ART_Y, ART_H, C_SEPARATOR);
