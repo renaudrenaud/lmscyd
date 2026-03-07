@@ -10,6 +10,12 @@ running on the [ESP32-2432S028](https://github.com/witnessmenow/ESP32-Cheap-Yell
 
 ---
 
+## Demo
+
+[![Watch the demo](https://img.youtube.com/vi/5TI3bDnk50s/maxresdefault.jpg)](https://youtu.be/5TI3bDnk50s?si=HpqCJrOL8foTzIQh)
+
+---
+
 ## Features
 
 - **Album art** — 120×120 JPEG fetched directly from LMS, cached in heap
