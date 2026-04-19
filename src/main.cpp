@@ -1303,13 +1303,40 @@ static void drawInfoServerScreen() {
     row("Port",       String(appCfg.lms_port), C_TITLE);
     y += 4;
     if (serverStatus.valid) {
-        row("LMS version",  serverStatus.version,                   C_ALBUM);
-        row("Players",      String(serverStatus.playerCount),        C_TITLE);
-        row("Albums",       String(serverStatus.totalAlbums),        C_TITLE);
-        row("Songs",        String(serverStatus.totalSongs),         C_TITLE);
+        row("LMS version", serverStatus.version, C_ALBUM);
+        char stats[56];
+        snprintf(stats, sizeof(stats), "Players: %d - Alb: %d - Songs: %d",
+                 serverStatus.playerCount, serverStatus.totalAlbums, serverStatus.totalSongs);
+        display.setTextColor(C_TITLE, C_BG);
+        display.drawString(stats, SIDEBAR_W + MARGIN, y);
+        y += 20;
     } else {
         display.setTextColor(0xFF4040u, C_BG);
         display.drawString("Server unreachable", SIDEBAR_W + MARGIN, y);
+    }
+
+    // Liste des players
+    static const int MAX_PLY = 6;
+    PlayerInfo players[MAX_PLY];
+    int count = lms.getPlayersInfo(players, MAX_PLY);
+    if (count > 0) {
+        y += 4;
+        display.drawFastHLine(SIDEBAR_W + MARGIN, y, SCREEN_W - SIDEBAR_W - 2 * MARGIN, C_SEPARATOR);
+        y += 6;
+        display.setFont(&fonts::Font2);
+        for (int i = 0; i < count && y < 215; i++) {
+            uint32_t col = players[i].connected ? C_TITLE : C_FORMAT;
+            String name = players[i].name;
+            if (name.length() > 18) name = name.substring(0, 18);
+            String ip = players[i].ip.length() > 0 ? players[i].ip : "--";
+            int colon = ip.indexOf(':');
+            if (colon > 0) ip = ip.substring(0, colon);
+            char line[48];
+            snprintf(line, sizeof(line), "%-18s %s", name.c_str(), ip.c_str());
+            display.setTextColor(col, C_BG);
+            display.drawString(line, SIDEBAR_W + MARGIN, y);
+            y += 16;
+        }
     }
 
     display.setFont(&fonts::Font0);
