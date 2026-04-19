@@ -115,7 +115,7 @@ static const uint32_t C_SEPARATOR  = 0x203060u;
 // =============================================================================
 //  État de l'interface
 // =============================================================================
-enum Screen { SCR_MAIN, SCR_CLOCK, SCR_INFO_SRV, SCR_INFO_PLY, SCR_PORTAL };
+enum Screen { SCR_MAIN, SCR_CLOCK, SCR_INFO_SRV, SCR_INFO_PLY, SCR_PORTAL, SCR_COVER };
 static Screen currentScreen = SCR_MAIN;
 
 // =============================================================================
@@ -141,7 +141,7 @@ static const int ART_H      = 120;            // se termine à y=148
 
 // Infos texte (colonne droite, à côté de la pochette)
 static const int INFO_X     = ART_X + ART_W + 4;   // 174
-static const int INFO_W     = SCREEN_W - SIDEBAR_W - INFO_X;  // 146
+static const int INFO_W     = SCREEN_W - INFO_X - MARGIN;     // 140
 static const int ARTIST_Y   = ART_Y;       // 28,  h=40  → y=68
 static const int ARTIST_H   = 40;
 static const int ALBUM_Y    = 70;           //       h=34  → y=104
@@ -249,6 +249,10 @@ static DNSServer  g_dnsServer;
 static uint8_t* g_coverBuf    = nullptr;
 static size_t   g_coverLen    = 0;
 static int      g_coverSongId = -1;   // -1 = jamais chargé (0 = morceau valide, >0 = morceau avec ID)
+
+// Cache plein écran (SCR_COVER uniquement)
+static uint8_t* g_coverBufFull = nullptr;
+static size_t   g_coverLenFull = 0;
 static char     g_coverErr[80] = "";  // raison d'échec (debug)
 
 // =============================================================================
@@ -373,6 +377,61 @@ static void drawCoverError(const char* msg) {
         p += len;
     }
     display.setTextDatum(lgfx::top_left);
+}
+
+static void downloadCoverFull(int songId) {
+    if (g_coverBufFull) { free(g_coverBufFull); g_coverBufFull = nullptr; g_coverLenFull = 0; }
+    if (songId <= 0 || WiFi.status() != WL_CONNECTED) return;
+
+    const int FULL_SIZE = 240;
+    String url = String("http://") + appCfg.lms_ip + ":" + appCfg.lms_port
+               + "/music/" + songId + "/cover_" + FULL_SIZE + "x" + FULL_SIZE + "_p";
+
+    WiFiClient wifiClient;
+    HTTPClient http;
+    http.begin(wifiClient, url);
+    http.setTimeout(6000);
+
+    if (http.GET() != 200) { http.end(); return; }
+
+    int contentLen = http.getSize();
+    const size_t MAX_FULL = 131072;   // 128 KB
+    size_t allocLen = (contentLen > 0 && (size_t)contentLen <= MAX_FULL)
+                      ? (size_t)contentLen : 32768;
+    uint8_t* buf = (uint8_t*)malloc(allocLen);
+    if (!buf) { http.end(); return; }
+
+    WiFiClient* stream = http.getStreamPtr();
+    size_t total = 0;
+    uint32_t t = millis();
+    bool err = false;
+
+    while (millis() - t < 6000 && http.connected()) {
+        int avail = stream->available();
+        if (avail > 0) {
+            if (total + (size_t)avail > allocLen) {
+                size_t newLen = min(allocLen * 2, MAX_FULL);
+                if (newLen <= allocLen) { err = true; break; }
+                uint8_t* tmp = (uint8_t*)realloc(buf, newLen);
+                if (!tmp) { err = true; break; }
+                buf = tmp; allocLen = newLen;
+            }
+            int rd = stream->readBytes(buf + total, (int)min((size_t)avail, allocLen - total));
+            total += rd;
+            if (contentLen > 0 && total >= (size_t)contentLen) break;
+        } else if (contentLen > 0 && total >= (size_t)contentLen) {
+            break;
+        }
+        delay(1);
+    }
+    http.end();
+
+    if (!err && total > 0) {
+        g_coverBufFull = buf;
+        g_coverLenFull = total;
+    } else {
+        free(buf);
+    }
 }
 
 static void drawCover() {
@@ -1164,6 +1223,23 @@ static const char PORTAL_SAVED[] PROGMEM =
     "h2{color:green}</style></head><body>"
     "<h2>Saved!</h2><p>The device is rebooting&hellip;</p></body></html>";
 
+static void drawCoverScreen() {
+    display.fillScreen(C_BG);
+    uint8_t* buf = g_coverBufFull ? g_coverBufFull : g_coverBuf;
+    size_t   len = g_coverBufFull ? g_coverLenFull : g_coverLen;
+    if (buf && len > 0) {
+        display.drawJpg(buf, len,
+                        (SCREEN_W - 240) / 2, (SCREEN_H - 240) / 2,
+                        240, 240);
+    } else {
+        display.setFont(&fonts::FreeSans9pt7b);
+        display.setTextColor(C_FORMAT, C_BG);
+        display.setTextDatum(lgfx::middle_center);
+        display.drawString("No cover", SCREEN_W / 2, SCREEN_H / 2);
+        display.setTextDatum(lgfx::top_left);
+    }
+}
+
 static void drawPortalScreen() {
     display.fillScreen(C_BG);
     display.fillRect(0, 0, SCREEN_W, HDR_H, C_HEADER_BG);
@@ -1701,6 +1777,9 @@ static void cycleClockStyle() {
 // =============================================================================
 static void enterScreen(Screen s) {
     if (currentScreen == SCR_PORTAL && s != SCR_PORTAL) stopPortal();
+    if (s != SCR_COVER && g_coverBufFull) {
+        free(g_coverBufFull); g_coverBufFull = nullptr; g_coverLenFull = 0;
+    }
     currentScreen = s;
     switch (s) {
         case SCR_MAIN:
@@ -1726,6 +1805,10 @@ static void enterScreen(Screen s) {
         case SCR_PORTAL:
             startPortal();
             break;
+        case SCR_COVER:
+            downloadCoverFull(g_coverSongId);
+            drawCoverScreen();
+            break;
     }
 }
 
@@ -1750,16 +1833,23 @@ static void handleShortTap(int16_t tx, int16_t ty) {
         case SCR_MAIN: {
             if (!playerStatus.valid || playerStatus.playerid.isEmpty()) return;
 
+            // Tap sur la pochette → plein écran (axe X inversé : ART_X visuel = tx élevé)
+            if (ty >= ART_Y && ty < ART_Y + ART_H &&
+                tx >= SCREEN_W - SIDEBAR_W - ART_W && tx < SCREEN_W - SIDEBAR_W) {
+                if (g_coverBuf && g_coverLen > 0) enterScreen(SCR_COVER);
+                return;
+            }
+
             // Axe X inversé : gauche visuel = tx élevé, droite visuel = tx bas.
             // Zone gauche (next) = tx élevé, zone droite (prev) = tx bas.
             int ctrlW = SCREEN_W - SIDEBAR_W;
             if (tx > ctrlW * 2 / 3) {
-                lms.nextTrack(playerStatus.playerid);
+                lms.prevTrack(playerStatus.playerid);
             } else if (tx > ctrlW / 3) {
                 if (playerStatus.isPlaying) lms.pause(playerStatus.playerid);
                 else                        lms.play(playerStatus.playerid);
             } else {
-                lms.prevTrack(playerStatus.playerid);
+                lms.nextTrack(playerStatus.playerid);
             }
             lastPoll = 0;
             break;
@@ -1776,6 +1866,10 @@ static void handleShortTap(int16_t tx, int16_t ty) {
 
         case SCR_PORTAL:
             break;  // touches ignorées (l'utilisateur navigue depuis son téléphone)
+
+        case SCR_COVER:
+            enterScreen(SCR_MAIN);
+            break;
     }
 }
 
@@ -1952,7 +2046,9 @@ void setup() {
     serverStatus = lms.getServerStatus();
     drawStartup();
     delay(1500);
-    enterScreen(SCR_CLOCK);
+    PlayerStatus ps;
+    bool playing = lms.findPlayer(appCfg.lms_player, ps) && ps.isPlaying;
+    enterScreen(playing ? SCR_MAIN : SCR_CLOCK);
 }
 
 // =============================================================================

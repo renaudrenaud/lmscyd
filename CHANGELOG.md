@@ -8,6 +8,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+---
+
+## [1.6.2] - 2026-04-19
+
+### Added
+- **Fullscreen cover** (`SCR_COVER`) — tapping the album art on the Now Playing screen opens the cover full-screen (240×240 fetched from LMS, centered on black); tapping again returns to Now Playing
+
 ### Fixed
 - **Casio clock** — brightened unlit LCD segments (`C_GOFF`) from `0xA4AE96` to `0xE5E7D9` for better readability
 
