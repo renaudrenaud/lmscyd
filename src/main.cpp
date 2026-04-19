@@ -1618,25 +1618,31 @@ static void drawClockScreen() {
                 display.setFont(&fonts::FreeSans9pt7b);
             }
             display.setTextColor(C_FORMAT, C_BG);
-            display.drawString(dateBuf, contentCenterX, hasTz2 ? 42 : 100);
+            if (hasTz2) {
+                char dateLine[48];
+                snprintf(dateLine, sizeof(dateLine), "%s - %s", dateBuf, tzCityName(appCfg.timezone).c_str());
+                display.drawString(dateLine, contentCenterX, 42);
+            } else {
+                display.drawString(dateBuf, contentCenterX, 100);
+            }
 
             if (hasTz2) {
                 display.drawFastHLine(SIDEBAR_W + MARGIN, 62, SCREEN_W - SIDEBAR_W - 2 * MARGIN, C_SEPARATOR);
-                display.setFont(&fonts::Font2);
-                display.setTextColor(C_FORMAT, C_BG);
-                display.drawString(tzCityName(appCfg.timezone2).c_str(), contentCenterX, 66);
 
                 struct tm t2;
                 if (getTimeInZone(appCfg.timezone2, t2)) {
                     char tz2Time[9], tz2Date[12];
                     strftime(tz2Time, sizeof(tz2Time), "%H:%M:%S", &t2);
                     strftime(tz2Date, sizeof(tz2Date), "%d/%m/%Y", &t2);
-                    display.setFont(&fonts::FreeSans18pt7b);
+                    display.setFont(&fonts::FreeSans24pt7b);
                     display.setTextColor(C_CLOCK, C_BG);
-                    display.drawString(tz2Time, contentCenterX, 84);
+                    display.drawString(tz2Time, contentCenterX, 66);
                     display.setFont(&fonts::Font2);
                     display.setTextColor(C_FORMAT, C_BG);
-                    display.drawString(tz2Date, contentCenterX, 115);
+                    char tz2DateLine[48];
+                    snprintf(tz2DateLine, sizeof(tz2DateLine), "%s - %s", tz2Date, tzCityName(appCfg.timezone2).c_str());
+                    display.drawString(tz2DateLine, contentCenterX, 108);
+                    display.drawFastHLine(SIDEBAR_W + MARGIN, 124, SCREEN_W - SIDEBAR_W - 2 * MARGIN, C_SEPARATOR);
                 }
             }
             display.setTextDatum(lgfx::top_left);
@@ -1941,6 +1947,8 @@ void setup() {
 
     serverStatus = lms.getServerStatus();
     drawStartup();
+    delay(1500);
+    enterScreen(SCR_CLOCK);
 }
 
 // =============================================================================
