@@ -115,7 +115,7 @@ static const uint32_t C_SEPARATOR  = 0x203060u;
 // =============================================================================
 //  État de l'interface
 // =============================================================================
-enum Screen { SCR_MAIN, SCR_HOME, SCR_CLOCK, SCR_INFO_SRV, SCR_INFO_PLY, SCR_PORTAL };
+enum Screen { SCR_MAIN, SCR_CLOCK, SCR_INFO_SRV, SCR_INFO_PLY, SCR_PORTAL };
 static Screen currentScreen = SCR_MAIN;
 
 // =============================================================================
@@ -125,19 +125,23 @@ static const int SCREEN_W   = 320;
 static const int SCREEN_H   = 240;
 static const int MARGIN     = 6;
 
-// En-tête (pleine largeur)
+// Barre latérale de navigation (gauche, 5 boutons)
+static const int SIDEBAR_W  = 50;
+static const int SIDEBAR_BTN_H = SCREEN_H / 5;  // 48px par bouton
+
+// En-tête (pleine largeur moins sidebar)
 static const int HDR_Y      = 0;
 static const int HDR_H      = 28;
 
-// Pochette d'album (colonne gauche)
-static const int ART_X      = 0;
-static const int ART_Y      = HDR_H;        // 28
+// Pochette d'album (colonne gauche, après sidebar)
+static const int ART_X      = SIDEBAR_W;      // 50
+static const int ART_Y      = HDR_H;          // 28
 static const int ART_W      = 120;
-static const int ART_H      = 120;          // se termine à y=148
+static const int ART_H      = 120;            // se termine à y=148
 
 // Infos texte (colonne droite, à côté de la pochette)
-static const int INFO_X     = ART_W + 4;   // 124
-static const int INFO_W     = SCREEN_W - INFO_X;  // 196
+static const int INFO_X     = ART_X + ART_W + 4;   // 174
+static const int INFO_W     = SCREEN_W - SIDEBAR_W - INFO_X;  // 146
 static const int ARTIST_Y   = ART_Y;       // 28,  h=40  → y=68
 static const int ARTIST_H   = 40;
 static const int ALBUM_Y    = 70;           //       h=34  → y=104
@@ -153,7 +157,7 @@ static const int FMT_H      = 22;
 static const int CTRL_Y     = FMT_Y + FMT_H;      // 206
 static const int CTRL_H     = 34;                  // 206+34=240 ✓
 
-static const int TEXT_W     = SCREEN_W - 2 * MARGIN;  // pour progress/format
+static const int TEXT_W     = SCREEN_W - SIDEBAR_W - 2 * MARGIN;  // pour progress/format
 
 // =============================================================================
 //  Gestion du défilement de texte
@@ -398,6 +402,71 @@ static void drawCover() {
 }
 
 // =============================================================================
+//  Barre latérale de navigation (5 boutons tactiles)
+// =============================================================================
+static void drawSidebarIcon(int idx, int cx, int cy, uint32_t col) {
+    switch (idx) {
+        case 0: // Now Playing : triangle ▶
+            display.fillTriangle(cx - 7, cy - 8, cx - 7, cy + 8, cx + 8, cy, col);
+            break;
+        case 1: // Clock : cercle + aiguilles
+            display.drawCircle(cx, cy, 9, col);
+            display.drawLine(cx, cy, cx + 4, cy - 5, col); // minute
+            display.drawLine(cx, cy, cx,     cy - 7, col); // heure
+            display.fillCircle(cx, cy, 1, col);
+            break;
+        case 2: // Server : rectangle + deux barres
+            display.drawRect(cx - 9, cy - 8, 18, 16, col);
+            display.drawFastHLine(cx - 7, cy - 3, 14, col);
+            display.drawFastHLine(cx - 7, cy + 3, 14, col);
+            display.fillRect(cx - 7, cy - 7, 4, 3, col);
+            display.fillRect(cx - 7, cy - 1, 4, 3, col);
+            break;
+        case 3: // Player : écran avec pied
+            display.drawRoundRect(cx - 9, cy - 8, 18, 12, 2, col);
+            display.drawFastVLine(cx, cy + 4, 4, col);
+            display.drawFastHLine(cx - 4, cy + 8, 9, col);
+            break;
+        case 4: // Config : engrenage simplifié (cercle + 4 dents)
+            display.drawCircle(cx, cy, 5, col);
+            display.fillCircle(cx, cy, 3, col);
+            for (int a = 0; a < 4; a++) {
+                float angle = a * 3.14159f / 2.0f;
+                int x1 = cx + (int)(6 * cosf(angle));
+                int y1 = cy + (int)(6 * sinf(angle));
+                int x2 = cx + (int)(9 * cosf(angle));
+                int y2 = cy + (int)(9 * sinf(angle));
+                display.drawLine(x1, y1, x2, y2, col);
+            }
+            break;
+    }
+}
+
+static void drawSidebar() {
+    display.fillRect(0, 0, SIDEBAR_W, SCREEN_H, 0x0a0a1a);
+
+    for (int i = 0; i < 5; i++) {
+        int y = i * SIDEBAR_BTN_H;
+        bool active = (i == 0 && currentScreen == SCR_MAIN)     ||
+                      (i == 1 && currentScreen == SCR_CLOCK)    ||
+                      (i == 2 && currentScreen == SCR_INFO_SRV) ||
+                      (i == 3 && currentScreen == SCR_INFO_PLY) ||
+                      (i == 4 && currentScreen == SCR_PORTAL);
+
+        uint32_t bg  = active ? 0x1a2a4aU : 0x0a0a1aU;
+        uint32_t col = active ? 0x4a8affU : 0x6070a0U;
+        display.fillRect(0, y, SIDEBAR_W, SIDEBAR_BTN_H, bg);
+        if (active)
+            display.drawFastHLine(0, y, SIDEBAR_W, 0x4a6affU);
+        display.drawFastHLine(0, y + SIDEBAR_BTN_H - 1, SIDEBAR_W, 0x152030U);
+
+        drawSidebarIcon(i, SIDEBAR_W / 2, y + SIDEBAR_BTN_H / 2, col);
+    }
+
+    display.drawFastVLine(SIDEBAR_W, 0, SCREEN_H, 0x203050U);
+}
+
+// =============================================================================
 //  Conversion fuseau horaire IANA → POSIX (pour configTzTime)
 // =============================================================================
 static const char* ianaToposix(const char* iana) {
@@ -541,18 +610,18 @@ static void drawHeader(bool forceRedraw) {
     if (!forceRedraw && playerStatus.volume == lastVolume &&
         playerStatus.isPlaying == lastIsPlaying && rssiBars == lastRssiBars) return;
 
-    display.fillRect(0, HDR_Y, SCREEN_W, HDR_H, C_HEADER_BG);
+    display.fillRect(SIDEBAR_W, HDR_Y, SCREEN_W - SIDEBAR_W, HDR_H, C_HEADER_BG);
 
     // Icône play/pause
-    drawStatusIcon(MARGIN, 5, playerStatus.isPlaying);
+    drawStatusIcon(SIDEBAR_W + MARGIN, 5, playerStatus.isPlaying);
 
     // Nom du player (tronqué)
     display.setFont(&fonts::FreeSans9pt7b);
     display.setTextColor(C_TITLE, C_HEADER_BG);
     display.setTextDatum(lgfx::top_left);
     String name = playerStatus.playerName;
-    if (name.length() > 16) name = name.substring(0, 15) + "…";
-    display.drawString(name.c_str(), 30, 5);
+    if (name.length() > 10) name = name.substring(0, 10);
+    display.drawString(name.c_str(), SIDEBAR_W + 30, 5);
 
     // Barre de volume (droite, avant l'icône WiFi)
     int volX = 222, volY = 7, volW = 56, volH = 10;
@@ -579,8 +648,8 @@ static void drawHeader(bool forceRedraw) {
     }
 
     // Ligne séparatrice
-    display.drawFastHLine(0, HDR_H,     SCREEN_W, C_SEPARATOR);
-    display.drawFastHLine(0, HDR_H + 1, SCREEN_W, C_SEPARATOR >> 1);
+    display.drawFastHLine(SIDEBAR_W, HDR_H, SCREEN_W - SIDEBAR_W, C_SEPARATOR);
+    display.drawFastHLine(SIDEBAR_W, HDR_H + 1, SCREEN_W - SIDEBAR_W, C_SEPARATOR >> 1);
 
     lastVolume    = playerStatus.volume;
     lastIsPlaying = playerStatus.isPlaying;
@@ -606,7 +675,7 @@ static void drawProgress(bool forceRedraw) {
     if (!forceRedraw && fabsf(elapsed - lastElapsed) < 0.5f) return;
     lastElapsed = elapsed;
 
-    display.drawFastHLine(0, PROG_Y, SCREEN_W, C_SEPARATOR);
+    display.drawFastHLine(SIDEBAR_W, PROG_Y, SCREEN_W - SIDEBAR_W, C_SEPARATOR);
 
     // Temps écoulé / total
     String elapsedStr = formatTime(elapsed);
@@ -616,8 +685,8 @@ static void drawProgress(bool forceRedraw) {
     display.setFont(&fonts::Font2);
     display.setTextColor(C_FORMAT, C_BG);
     display.setTextDatum(lgfx::top_left);
-    display.fillRect(0, PROG_Y + 2, SCREEN_W, 14, C_BG);
-    display.drawString(pos.c_str(), MARGIN, PROG_Y + 3);
+    display.fillRect(SIDEBAR_W, PROG_Y + 2, SCREEN_W - SIDEBAR_W, 14, C_BG);
+    display.drawString(pos.c_str(), SIDEBAR_W + MARGIN, PROG_Y + 3);
 
     // Numéro de piste
     char trkbuf[12];
@@ -631,7 +700,7 @@ static void drawProgress(bool forceRedraw) {
     float ratio = 0;
     if (trackInfo.valid && trackInfo.duration > 0)
         ratio = elapsed / trackInfo.duration;
-    drawBar(MARGIN, PROG_Y + 20, SCREEN_W - 2 * MARGIN, 10,
+    drawBar(SIDEBAR_W + MARGIN, PROG_Y + 20, SCREEN_W - SIDEBAR_W - 2 * MARGIN, 10,
             ratio, C_PROGRESS, C_TRACK_BG);
 }
 
@@ -639,8 +708,8 @@ static void drawProgress(bool forceRedraw) {
 //  Dessin des infos de format audio
 // =============================================================================
 static void drawFormatInfo() {
-    display.fillRect(0, FMT_Y, SCREEN_W, FMT_H, C_BG);
-    display.drawFastHLine(0, FMT_Y, SCREEN_W, C_SEPARATOR);
+    display.fillRect(SIDEBAR_W, FMT_Y, SCREEN_W - SIDEBAR_W, FMT_H, C_BG);
+    display.drawFastHLine(SIDEBAR_W, FMT_Y, SCREEN_W - SIDEBAR_W, C_SEPARATOR);
 
     if (!trackInfo.valid) return;
 
@@ -660,22 +729,22 @@ static void drawFormatInfo() {
     display.setTextDatum(lgfx::top_left);
 
     String left = fmt.length() > 0 ? fmt + "  " + info : info;
-    display.drawString(left.c_str(), MARGIN, FMT_Y + 4);
+    display.drawString(left.c_str(), SIDEBAR_W + MARGIN, FMT_Y + 4);
 }
 
 // =============================================================================
 //  Zone de contrôle (indications tactiles discrètes)
 // =============================================================================
 static void drawControls() {
-    display.fillRect(0, CTRL_Y, SCREEN_W, CTRL_H, C_BG);
-    display.drawFastHLine(0, CTRL_Y, SCREEN_W, C_SEPARATOR);
+    display.fillRect(SIDEBAR_W, CTRL_Y, SCREEN_W - SIDEBAR_W, CTRL_H, C_BG);
+    display.drawFastHLine(SIDEBAR_W, CTRL_Y, SCREEN_W - SIDEBAR_W, C_SEPARATOR);
 
     display.setFont(&fonts::Font0);
     display.setTextColor(0x404040u, C_BG);
     display.setTextDatum(lgfx::top_left);
-    display.drawString("|<< PREV", MARGIN, CTRL_Y + 10);
+    display.drawString("|<< PREV", SIDEBAR_W + MARGIN, CTRL_Y + 10);
     display.setTextDatum(lgfx::top_center);
-    display.drawString("PLAY/PAUSE", SCREEN_W / 2, CTRL_Y + 10);
+    display.drawString("PLAY/PAUSE", SIDEBAR_W + SCREEN_W / 2, CTRL_Y + 10);
     display.setTextDatum(lgfx::top_right);
     display.drawString("NEXT >>|", SCREEN_W - MARGIN, CTRL_Y + 10);
     display.setTextDatum(lgfx::top_left);
@@ -687,6 +756,7 @@ static void drawControls() {
 static void drawPlayingScreen(bool full) {
     if (full) {
         display.fillScreen(C_BG);
+        drawSidebar();         // barre latérale de navigation
         drawCover();           // pochette depuis le cache (rapide)
         drawControls();
         drawFormatInfo();
@@ -781,26 +851,28 @@ static int32_t posixTzToOffset(const char* posix) {
     return -offsetSec;
 }
 
-// Retourne l'heure locale dans un fuseau IANA quelconque.
-// Utilise un calcul manuel sans modifier TZ global (thread-safe).
+// Retourne l'heure locale dans un fuseau IANA quelconque, DST inclus.
+// Utilise setenv/tzset/localtime_r puis restaure le TZ principal.
 static bool getTimeInZone(const char* iana, struct tm& t) {
     time_t now;
     time(&now);
     if (now < 1000000) return false;   // NTP pas encore synchronisé
 
-    // Obtenir l'heure UTC
-    struct tm utc;
-    gmtime_r(&now, &utc);
-
-    // Convertir IANA → POSIX → offset
     const char* posix = ianaToposix(iana);
 
-    // Calculer l'offset depuis la chaîne POSIX
-    int32_t offset = posixTzToOffset(posix);
+    // Sauvegarder le TZ courant
+    char savedTz[64] = "";
+    const char* cur = getenv("TZ");
+    if (cur) strlcpy(savedTz, cur, sizeof(savedTz));
 
-    // Appliquer l'offset à l'heure UTC
-    time_t localTime = now + offset;
-    gmtime_r(&localTime, &t);
+    setenv("TZ", posix, 1);
+    tzset();
+    localtime_r(&now, &t);
+
+    // Restaurer le TZ principal
+    if (savedTz[0]) setenv("TZ", savedTz, 1);
+    else            unsetenv("TZ");
+    tzset();
 
     return true;
 }
@@ -1202,63 +1274,26 @@ static void startPortal() {
 }
 
 // =============================================================================
-//  Écran Home — menu de navigation
-// =============================================================================
-static void drawHomeScreen() {
-    display.fillScreen(C_BG);
-
-    // Header
-    display.fillRect(0, 0, SCREEN_W, HDR_H, C_HEADER_BG);
-    display.setFont(&fonts::FreeSans9pt7b);
-    display.setTextColor(C_TITLE, C_HEADER_BG);
-    display.setTextDatum(lgfx::top_center);
-    display.drawString("MENU", SCREEN_W / 2, 6);
-    display.drawFastHLine(0, HDR_H, SCREEN_W, C_SEPARATOR);
-    display.setTextDatum(lgfx::top_left);
-
-    // 5 menu items — chaque bouton : ~42 px de hauteur (5×42 + 28 = 238 ≈ 240)
-    const int      ITEM_H    = (SCREEN_H - HDR_H) / 5;   // 42
-    const char*    labels[]  = { "Now Playing", "Clock", "LMS Server Info", "Players Info", "Web Portal" };
-    const uint32_t accents[] = { C_PLAY_ICON,   C_CLOCK,  C_ALBUM,           C_ARTIST,       C_VOLUME };
-
-    for (int i = 0; i < 5; i++) {
-        int y = HDR_H + i * ITEM_H;
-        int h = (i < 4) ? ITEM_H : (SCREEN_H - y);   // dernier item prend le reste
-        display.fillRect(0, y, SCREEN_W, h, C_BG);
-        display.fillRect(0, y + 2, 5, h - 4, accents[i]);   // accent gauche
-        display.setFont(&fonts::FreeSans9pt7b);
-        display.setTextColor(accents[i], C_BG);
-        display.setTextDatum(lgfx::middle_left);
-        display.drawString(labels[i], 12, y + h / 2);
-        display.setTextColor(C_FORMAT, C_BG);
-        display.setTextDatum(lgfx::middle_right);
-        display.drawString(">", SCREEN_W - MARGIN, y + h / 2);
-        if (i < 4)
-            display.drawFastHLine(5, y + h - 1, SCREEN_W - 5, C_SEPARATOR);
-    }
-    display.setTextDatum(lgfx::top_left);
-}
-
-// =============================================================================
 //  Écran informations LMS Server
 // =============================================================================
 static void drawInfoServerScreen() {
     display.fillScreen(C_BG);
-    display.fillRect(0, 0, SCREEN_W, HDR_H, C_HEADER_BG);
+    drawSidebar();
+    display.fillRect(SIDEBAR_W, 0, SCREEN_W - SIDEBAR_W, HDR_H, C_HEADER_BG);
     display.setFont(&fonts::FreeSans9pt7b);
     display.setTextColor(C_TITLE, C_HEADER_BG);
     display.setTextDatum(lgfx::top_center);
-    display.drawString("LMS Server Info", SCREEN_W / 2, 6);
-    display.drawFastHLine(0, HDR_H, SCREEN_W, C_SEPARATOR);
+    display.drawString("LMS Server Info", SIDEBAR_W + (SCREEN_W - SIDEBAR_W) / 2, 6);
+    display.drawFastHLine(SIDEBAR_W, HDR_H, SCREEN_W - SIDEBAR_W, C_SEPARATOR);
     display.setTextDatum(lgfx::top_left);
 
     display.setFont(&fonts::Font2);
-    const int COL2 = 120;
+    const int COL2 = SIDEBAR_W + 120;
     int y = 38;
 
     auto row = [&](const char* label, const String& val, uint32_t color) {
         display.setTextColor(C_FORMAT, C_BG);
-        display.drawString(label, MARGIN, y);
+        display.drawString(label, SIDEBAR_W + MARGIN, y);
         display.setTextColor(color, C_BG);
         display.drawString(val.c_str(), COL2, y);
         y += 20;
@@ -1274,13 +1309,13 @@ static void drawInfoServerScreen() {
         row("Songs",        String(serverStatus.totalSongs),         C_TITLE);
     } else {
         display.setTextColor(0xFF4040u, C_BG);
-        display.drawString("Server unreachable", MARGIN, y);
+        display.drawString("Server unreachable", SIDEBAR_W + MARGIN, y);
     }
 
     display.setFont(&fonts::Font0);
     display.setTextColor(0x404040u, C_BG);
     display.setTextDatum(lgfx::top_center);
-    display.drawString("Tap anywhere to go back", SCREEN_W / 2, 225);
+    display.drawString("Tap sidebar to navigate", SIDEBAR_W + (SCREEN_W - SIDEBAR_W) / 2, 225);
     display.setTextDatum(lgfx::top_left);
 }
 
@@ -1289,12 +1324,13 @@ static void drawInfoServerScreen() {
 // =============================================================================
 static void drawInfoPlayersScreen() {
     display.fillScreen(C_BG);
-    display.fillRect(0, 0, SCREEN_W, HDR_H, C_HEADER_BG);
+    drawSidebar();
+    display.fillRect(SIDEBAR_W, 0, SCREEN_W - SIDEBAR_W, HDR_H, C_HEADER_BG);
     display.setFont(&fonts::FreeSans9pt7b);
     display.setTextColor(C_TITLE, C_HEADER_BG);
     display.setTextDatum(lgfx::top_center);
-    display.drawString("Players Info", SCREEN_W / 2, 6);
-    display.drawFastHLine(0, HDR_H, SCREEN_W, C_SEPARATOR);
+    display.drawString("Players Info", SIDEBAR_W + (SCREEN_W - SIDEBAR_W) / 2, 6);
+    display.drawFastHLine(SIDEBAR_W, HDR_H, SCREEN_W - SIDEBAR_W, C_SEPARATOR);
     display.setTextDatum(lgfx::top_left);
 
     static const int MAX_PLY = 5;
@@ -1305,7 +1341,7 @@ static void drawInfoPlayersScreen() {
         display.setFont(&fonts::Font2);
         display.setTextColor(0xFF4040u, C_BG);
         display.setTextDatum(lgfx::top_center);
-        display.drawString("No players found", SCREEN_W / 2, 100);
+        display.drawString("No players found", SIDEBAR_W + (SCREEN_W - SIDEBAR_W) / 2, 100);
         display.setTextDatum(lgfx::top_left);
     } else {
         int y = 34;
@@ -1315,31 +1351,31 @@ static void drawInfoPlayersScreen() {
             display.setFont(&fonts::FreeSans9pt7b);
             display.setTextColor(nc, C_BG);
             String name = players[i].name;
-            if (display.textWidth(name.c_str()) > SCREEN_W - 2 * MARGIN)
+            if (display.textWidth(name.c_str()) > SCREEN_W - SIDEBAR_W - 2 * MARGIN)
                 name = name.substring(0, 20) + "...";
-            display.drawString(name.c_str(), MARGIN, y);
+            display.drawString(name.c_str(), SIDEBAR_W + MARGIN, y);
             y += 16;
 
             display.setFont(&fonts::Font2);
             display.setTextColor(C_FORMAT, C_BG);
             display.drawString(("IP:  " + (players[i].ip.length() > 0 ? players[i].ip : "--")).c_str(),
-                               MARGIN + 6, y); y += 13;
+                               SIDEBAR_W + MARGIN + 6, y); y += 13;
             display.drawString(("MAC: " + players[i].playerid).c_str(),
-                               MARGIN + 6, y); y += 13;
+                               SIDEBAR_W + MARGIN + 6, y); y += 13;
             if (players[i].firmware.length() > 0) {
                 display.drawString(("FW:  " + players[i].firmware).c_str(),
-                                   MARGIN + 6, y); y += 13;
+                                   SIDEBAR_W + MARGIN + 6, y); y += 13;
             }
             y += 4;
             if (y > 210) break;
-            display.drawFastHLine(MARGIN, y - 2, SCREEN_W - 2 * MARGIN, C_SEPARATOR);
+            display.drawFastHLine(SIDEBAR_W + MARGIN, y - 2, SCREEN_W - SIDEBAR_W - 2 * MARGIN, C_SEPARATOR);
         }
     }
 
     display.setFont(&fonts::Font0);
     display.setTextColor(0x404040u, C_BG);
     display.setTextDatum(lgfx::top_center);
-    display.drawString("Tap anywhere to go back", SCREEN_W / 2, 225);
+    display.drawString("Tap sidebar to navigate", SIDEBAR_W + (SCREEN_W - SIDEBAR_W) / 2, 225);
     display.setTextDatum(lgfx::top_left);
 }
 
@@ -1371,7 +1407,7 @@ static void drawGShockClock(bool fullRedraw) {
     static const uint32_t C_GBODY = 0x080808u;  // boîtier quasi-noir
     static const uint32_t C_GLCD  = 0xC2CDB5u;  // fond LCD gris-vert clair (positif)
     static const uint32_t C_GON   = 0x141E08u;  // segment allumé (vert très sombre)
-    static const uint32_t C_GOFF  = 0xA4AE96u;  // segment éteint (légèrement visible)
+    static const uint32_t C_GOFF  = 0xE5E7D9u;  // segment éteint (LCD gris clair visible)
     static const uint32_t C_GBORD = 0x040404u;  // liseré LCD
 
     // 18px de boîtier en haut pour "PROTECTION", LCD de y=18 à y=214
@@ -1464,6 +1500,7 @@ static void drawClockScreen() {
 
     if (clockNeedsFullRedraw) {
         display.fillScreen(C_BG);
+        drawSidebar();
         clockNeedsFullRedraw = false;
 
         if (isCasio) {
@@ -1471,14 +1508,14 @@ static void drawClockScreen() {
         }
 
         // Barre inférieure (commune à tous les styles)
-        display.drawFastHLine(0, SCREEN_H - 22, SCREEN_W, C_SEPARATOR);
+        display.drawFastHLine(SIDEBAR_W, SCREEN_H - 22, SCREEN_W - SIDEBAR_W, C_SEPARATOR);
         display.setFont(&fonts::Font2);
         display.setTextColor(C_FORMAT, C_BG);
         display.setTextDatum(lgfx::top_left);
-        display.drawString(isAnalog ? "Analog" : (isCasio ? "G-Shock" : "Digital"), MARGIN, SCREEN_H - 16);
+        display.drawString(isAnalog ? "Analog" : (isCasio ? "G-Shock" : "Digital"), SIDEBAR_W + MARGIN, SCREEN_H - 16);
         display.setTextColor(C_ALBUM, C_BG);
         display.setTextDatum(lgfx::top_right);
-        display.drawString("NEXT >", SCREEN_W - MARGIN, SCREEN_H - 16);
+        display.drawString("Tap style >", SCREEN_W - MARGIN, SCREEN_H - 16);
         display.setTextDatum(lgfx::top_left);
     }
 
@@ -1489,6 +1526,8 @@ static void drawClockScreen() {
 
     struct tm t;
     bool hasTime = getLocalTime(&t, 10);
+
+    int contentCenterX = SIDEBAR_W + (SCREEN_W - SIDEBAR_W) / 2;
 
     if (isAnalog) {
         if (hasTime) {
@@ -1504,7 +1543,7 @@ static void drawClockScreen() {
             display.setFont(&fonts::Font2);
             display.setTextColor(C_FORMAT, C_BG);
             display.setTextDatum(lgfx::top_center);
-            display.drawString(dateBuf, SCREEN_W / 2, hasTz2 ? 186 : 196);
+            display.drawString(dateBuf, contentCenterX, hasTz2 ? 186 : 196);
 
             if (hasTz2) {
                 struct tm t2;
@@ -1515,7 +1554,7 @@ static void drawClockScreen() {
                     snprintf(tz2Line, sizeof(tz2Line), "%s  %s",
                              tzCityName(appCfg.timezone2).c_str(), tz2Buf);
                     display.setTextColor(C_ALBUM, C_BG);
-                    display.drawString(tz2Line, SCREEN_W / 2, 202);
+                    display.drawString(tz2Line, contentCenterX, 202);
                 }
             }
             display.setTextDatum(lgfx::top_left);
@@ -1529,11 +1568,11 @@ static void drawClockScreen() {
                 snprintf(buf, sizeof(buf), "LMS v%s  —  %d players  %d albums  %d songs",
                          serverStatus.version.c_str(), serverStatus.playerCount,
                          serverStatus.totalAlbums, serverStatus.totalSongs);
-                display.drawString(buf, SCREEN_W / 2, 208);
+                display.drawString(buf, contentCenterX, 208);
             } else {
                 display.setTextColor(0xFF4040u, C_BG);
                 display.drawString((String("LMS unreachable — ") + appCfg.lms_ip).c_str(),
-                                   SCREEN_W / 2, 208);
+                                   contentCenterX, 208);
             }
             display.setTextDatum(lgfx::top_left);
         }
@@ -1545,20 +1584,20 @@ static void drawClockScreen() {
             display.setFont(&fonts::FreeSans24pt7b);
             display.setTextColor(C_CLOCK, C_BG);
             display.setTextDatum(lgfx::top_center);
-            display.drawString(timeBuf, SCREEN_W / 2, hasTz2 ? 2 : 30);
+            display.drawString(timeBuf, contentCenterX, hasTz2 ? 2 : 30);
             if (hasTz2) {
                 display.setFont(&fonts::Font2);
             } else {
                 display.setFont(&fonts::FreeSans9pt7b);
             }
             display.setTextColor(C_FORMAT, C_BG);
-            display.drawString(dateBuf, SCREEN_W / 2, hasTz2 ? 42 : 100);
+            display.drawString(dateBuf, contentCenterX, hasTz2 ? 42 : 100);
 
             if (hasTz2) {
-                display.drawFastHLine(MARGIN, 62, SCREEN_W - 2 * MARGIN, C_SEPARATOR);
+                display.drawFastHLine(SIDEBAR_W + MARGIN, 62, SCREEN_W - SIDEBAR_W - 2 * MARGIN, C_SEPARATOR);
                 display.setFont(&fonts::Font2);
                 display.setTextColor(C_FORMAT, C_BG);
-                display.drawString(tzCityName(appCfg.timezone2).c_str(), SCREEN_W / 2, 66);
+                display.drawString(tzCityName(appCfg.timezone2).c_str(), contentCenterX, 66);
 
                 struct tm t2;
                 if (getTimeInZone(appCfg.timezone2, t2)) {
@@ -1567,10 +1606,10 @@ static void drawClockScreen() {
                     strftime(tz2Date, sizeof(tz2Date), "%d/%m/%Y", &t2);
                     display.setFont(&fonts::FreeSans18pt7b);
                     display.setTextColor(C_CLOCK, C_BG);
-                    display.drawString(tz2Time, SCREEN_W / 2, 84);
+                    display.drawString(tz2Time, contentCenterX, 84);
                     display.setFont(&fonts::Font2);
                     display.setTextColor(C_FORMAT, C_BG);
-                    display.drawString(tz2Date, SCREEN_W / 2, 115);
+                    display.drawString(tz2Date, contentCenterX, 115);
                 }
             }
             display.setTextDatum(lgfx::top_left);
@@ -1581,13 +1620,29 @@ static void drawClockScreen() {
             char buf[48];
             display.setTextColor(C_FORMAT, C_BG);
             snprintf(buf, sizeof(buf), "LMS v%s", serverStatus.version.c_str());
-            display.drawString(buf, MARGIN, hasTz2 ? 140 : 135);
+            display.drawString(buf, SIDEBAR_W + MARGIN, hasTz2 ? 140 : 135);
             snprintf(buf, sizeof(buf), "Players: %d  Albums: %d  Songs: %d",
                      serverStatus.playerCount, serverStatus.totalAlbums, serverStatus.totalSongs);
-            display.drawString(buf, MARGIN, hasTz2 ? 156 : 155);
+            display.drawString(buf, SIDEBAR_W + MARGIN, hasTz2 ? 156 : 155);
         } else {
             display.setTextColor(0xFF4040u, C_BG);
-            display.drawString((String("LMS unreachable — ") + appCfg.lms_ip).c_str(), MARGIN, hasTz2 ? 140 : 135);
+            display.drawString((String("LMS unreachable — ") + appCfg.lms_ip).c_str(), SIDEBAR_W + MARGIN, hasTz2 ? 140 : 135);
+        }
+
+        if (hasTz2 && playerStatus.valid && playerStatus.isPlaying) {
+            String pname = playerStatus.playerName;
+            if (pname.length() > 16) pname = pname.substring(0, 16);
+            String album = trackInfo.valid ? trackInfo.album : "";
+            if (album.isEmpty()) album = playerStatus.currentTitle;
+            if (album.length() > 20) album = album.substring(0, 20);
+            char buf[64];
+            snprintf(buf, sizeof(buf), "%-16s reading: %s", pname.c_str(), album.c_str());
+            display.setFont(&fonts::Font0);
+            display.setTextColor(C_TITLE, C_BG);
+            display.drawString(buf, SIDEBAR_W + MARGIN, 172);
+        } else if (hasTz2) {
+            // Effacer la ligne si plus en lecture
+            display.fillRect(SIDEBAR_W, 172, SCREEN_W - SIDEBAR_W, 10, C_BG);
         }
     }
 }
@@ -1619,9 +1674,6 @@ static void enterScreen(Screen s) {
             clockPrevValid       = false;  // reset pour prochain entrée clock
             display.fillScreen(C_BG);
             break;
-        case SCR_HOME:
-            drawHomeScreen();
-            break;
         case SCR_CLOCK:
             lastClock            = 0;   // forcer le dessin immédiat dans loop()
             clockNeedsFullRedraw = true;
@@ -1644,33 +1696,35 @@ static void enterScreen(Screen s) {
 //  Gestion des taps courts (selon l'écran courant)
 // =============================================================================
 static void handleShortTap(int16_t tx, int16_t ty) {
+    // Sidebar : côté gauche visuel = tx élevé (axe X physiquement inversé)
+    if (currentScreen != SCR_PORTAL && tx > SCREEN_W - SIDEBAR_W) {
+        int btn = ty / SIDEBAR_BTN_H;
+        switch (btn) {
+            case 0: enterScreen(SCR_MAIN);     break;
+            case 1: enterScreen(SCR_CLOCK);    break;
+            case 2: enterScreen(SCR_INFO_SRV); break;
+            case 3: enterScreen(SCR_INFO_PLY); break;
+            case 4: enterScreen(SCR_PORTAL);   break;
+        }
+        return;
+    }
+
     switch (currentScreen) {
-        case SCR_MAIN:
+        case SCR_MAIN: {
             if (!playerStatus.valid || playerStatus.playerid.isEmpty()) return;
 
-            // Zones : gauche = suivant | centre = play/pause | droite = précédent
-            if (tx < SCREEN_W / 3) {
+            // Axe X inversé : gauche visuel = tx élevé, droite visuel = tx bas.
+            // Zone gauche (next) = tx élevé, zone droite (prev) = tx bas.
+            int ctrlW = SCREEN_W - SIDEBAR_W;
+            if (tx > ctrlW * 2 / 3) {
                 lms.nextTrack(playerStatus.playerid);
-            } else if (tx < 2 * SCREEN_W / 3) {
+            } else if (tx > ctrlW / 3) {
                 if (playerStatus.isPlaying) lms.pause(playerStatus.playerid);
                 else                        lms.play(playerStatus.playerid);
             } else {
                 lms.prevTrack(playerStatus.playerid);
             }
             lastPoll = 0;
-            break;
-
-        case SCR_HOME: {
-            if (ty < HDR_H) return;
-            // 5 items de hauteur égale sur (SCREEN_H - HDR_H)
-            int idx = constrain((ty - HDR_H) * 5 / (SCREEN_H - HDR_H), 0, 4);
-            switch (idx) {
-                case 0: enterScreen(SCR_MAIN);     break;
-                case 1: enterScreen(SCR_CLOCK);    break;
-                case 2: enterScreen(SCR_INFO_SRV); break;
-                case 3: enterScreen(SCR_INFO_PLY); break;
-                default: enterScreen(SCR_PORTAL);  break;
-            }
             break;
         }
 
@@ -1680,7 +1734,7 @@ static void handleShortTap(int16_t tx, int16_t ty) {
 
         case SCR_INFO_SRV:
         case SCR_INFO_PLY:
-            enterScreen(SCR_HOME);
+            enterScreen(SCR_MAIN);
             break;
 
         case SCR_PORTAL:
@@ -1689,7 +1743,7 @@ static void handleShortTap(int16_t tx, int16_t ty) {
 }
 
 // =============================================================================
-//  Gestion du tactile (long press → menu principal)
+//  Gestion du tactile
 //
 //  Machine d'états à 3 phases pour tolérer les parasites XPT2046 :
 //    TS_IDLE        : pas de contact
@@ -1722,12 +1776,6 @@ static void handleTouch() {
         case TS_PRESSING:
             if (pressed) {
                 lastTx = tx;  lastTy = ty;
-                // Long press → ouvrir le menu
-                if (currentScreen != SCR_HOME && now - touchDownMs >= LONG_PRESS_MS) {
-                    lastTouchMs = now;
-                    touchState  = TS_IDLE;
-                    enterScreen(SCR_HOME);
-                }
             } else {
                 // Contact perdu : glitch ou vrai relâché ?
                 touchUpMs  = now;
@@ -1785,6 +1833,52 @@ static void connectWifi() {
 }
 
 // =============================================================================
+//  Découverte LMS par scan TCP du sous-réseau /24
+//  Fast path : si l'IP configurée répond déjà, rien à faire.
+//  Slow path : scan de toutes les IPs du /24 sur le port LMS.
+// =============================================================================
+static void discoverLmsViaScan() {
+    if (WiFi.status() != WL_CONNECTED) return;
+
+    // Fast path : l'IP configurée est toujours valide
+    if (lms.getServerStatus().valid) return;
+
+    drawConnecting("Scanning network for LMS...");
+
+    IPAddress local = WiFi.localIP();
+    uint32_t base = ((uint32_t)local[0] << 24) | ((uint32_t)local[1] << 16)
+                  | ((uint32_t)local[2] << 8);   // /24 prefix en big-endian
+
+    for (int i = 1; i < 255; i++) {
+        IPAddress candidate(local[0], local[1], local[2], i);
+        if (candidate == local) continue;
+
+        WiFiClient client;
+        if (!client.connect(candidate, appCfg.lms_port, 100)) continue;
+        client.stop();
+
+        // Port ouvert — vérifier que c'est bien LMS
+        String ip = candidate.toString();
+        lms.init(ip.c_str(), appCfg.lms_port);
+        if (!lms.getServerStatus().valid) continue;
+
+        // Trouvé
+        if (ip != String(appCfg.lms_ip)) {
+            char msg[48];
+            snprintf(msg, sizeof(msg), "LMS found: %s", ip.c_str());
+            drawConnecting(msg);
+            delay(1200);
+            strlcpy(appCfg.lms_ip, ip.c_str(), sizeof(appCfg.lms_ip));
+            saveAppConfig(appCfg);
+        }
+        return;
+    }
+
+    // Non trouvé — restaurer l'IP configurée pour le comportement habituel
+    lms.init(appCfg.lms_ip, appCfg.lms_port);
+}
+
+// =============================================================================
 //  Setup
 // =============================================================================
 void setup() {
@@ -1816,6 +1910,7 @@ void setup() {
     lms.init(appCfg.lms_ip, appCfg.lms_port);
 
     connectWifi();
+    discoverLmsViaScan();
 
     serverStatus = lms.getServerStatus();
     drawStartup();
@@ -1889,16 +1984,7 @@ void loop() {
         PlayerStatus newPlayer;
         bool found = lms.findPlayer(appCfg.lms_player, newPlayer);
 
-        static int notFoundCount = 0;
-
         if (found && newPlayer.isPlaying) {
-            notFoundCount = 0;
-
-            // Si on était en horloge auto, retour à l'écran principal
-            if (currentScreen == SCR_CLOCK) {
-                enterScreen(SCR_MAIN);
-            }
-
             // songChanged OU données manquantes (fetch raté lors du démarrage / LMS indisponible)
             bool songChanged = (newPlayer.currentSongId != lastSongId)
                             || (!trackInfo.valid && newPlayer.currentSongId > 0)
@@ -1925,35 +2011,23 @@ void loop() {
             playerStatus      = newPlayer;
             g_elapsedAnchor   = newPlayer.elapsed;
             g_elapsedAnchorMs = now;
-            drawPlayingScreen(fullRedrawNeeded);
-            fullRedrawNeeded = false;
+            if (currentScreen == SCR_MAIN) {
+                drawPlayingScreen(fullRedrawNeeded);
+                fullRedrawNeeded = false;
+            }
 
         } else if (found) {
-            notFoundCount = 0;
-            // Player trouvé mais pas en lecture (pause/stop) → passer en horloge
+            // Player trouvé mais pas en lecture (pause/stop) → on met à jour le statut
+            // mais on reste sur l'écran actuel (plus de transition auto vers clock)
             playerStatus = newPlayer;
             if (currentScreen == SCR_MAIN) {
                 lastSongId    = -1;
                 lastIsPlaying = false;
-                enterScreen(SCR_CLOCK);
-            }
-        } else {
-            // found == false : erreur réseau ou player disparu
-            if (++notFoundCount >= PLAYER_LOST_POLLS && currentScreen == SCR_MAIN) {
-                // Player introuvable depuis trop longtemps (éteint ?) → horloge
-                notFoundCount    = 0;
-                lastSongId       = -1;
-                lastIsPlaying    = false;
-                playerStatus     = PlayerStatus{};   // reset : isPlaying=false, valid=false
-                enterScreen(SCR_CLOCK);
+                drawPlayingScreen(true);
             }
         }
+        // else: found == false (erreur réseau ou player disparu) → on garde l'affichage actuel
         } // if (now - lastPoll >= interval)
-    }
-
-    // --- Fallback : SCR_MAIN sans lecture (LMS injoignable au démarrage) → horloge ---
-    if (currentScreen == SCR_MAIN && !playerStatus.isPlaying) {
-        enterScreen(SCR_CLOCK);
     }
 
     // --- Défilement du texte et barre de progression (rafraîchissement local) ---
