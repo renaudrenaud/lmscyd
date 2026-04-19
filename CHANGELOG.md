@@ -13,6 +13,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.6.1] - 2026-04-19
+
+### Added
+- **Server Info auto-refresh** — screen polls LMS every 8 seconds but only redraws when player list actually changed (no flicker)
+- **Player list sorted** — connected players shown first (white), disconnected below (grey)
+
+### Changed
+- **Clock screen** — date lines now include city name: `DD/MM/YYYY - Shanghai` / `DD/MM/YYYY - Paris`; secondary timezone uses same font size as primary
+- **Default screen** — device boots directly to `SCR_CLOCK` instead of staying on splash screen
+
+---
+
 ## [1.6.0] - 2026-04-19
 
 ### Added

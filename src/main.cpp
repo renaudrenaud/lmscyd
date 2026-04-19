@@ -1324,18 +1324,22 @@ static void drawInfoServerScreen() {
         display.drawFastHLine(SIDEBAR_W + MARGIN, y, SCREEN_W - SIDEBAR_W - 2 * MARGIN, C_SEPARATOR);
         y += 6;
         display.setFont(&fonts::Font2);
-        for (int i = 0; i < count && y < 215; i++) {
-            uint32_t col = players[i].connected ? C_TITLE : C_FORMAT;
-            String name = players[i].name;
-            if (name.length() > 18) name = name.substring(0, 18);
-            String ip = players[i].ip.length() > 0 ? players[i].ip : "--";
-            int colon = ip.indexOf(':');
-            if (colon > 0) ip = ip.substring(0, colon);
-            char line[48];
-            snprintf(line, sizeof(line), "%-18s %s", name.c_str(), ip.c_str());
-            display.setTextColor(col, C_BG);
-            display.drawString(line, SIDEBAR_W + MARGIN, y);
-            y += 16;
+        // Actifs en premier, inactifs ensuite
+        for (int pass = 0; pass < 2; pass++) {
+            for (int i = 0; i < count && y < 215; i++) {
+                if ((pass == 0) != players[i].connected) continue;
+                uint32_t col = players[i].connected ? C_TITLE : C_FORMAT;
+                String name = players[i].name;
+                if (name.length() > 18) name = name.substring(0, 18);
+                String ip = players[i].ip.length() > 0 ? players[i].ip : "--";
+                int colon = ip.indexOf(':');
+                if (colon > 0) ip = ip.substring(0, colon);
+                char line[48];
+                snprintf(line, sizeof(line), "%-18s %s", name.c_str(), ip.c_str());
+                display.setTextColor(col, C_BG);
+                display.drawString(line, SIDEBAR_W + MARGIN, y);
+                y += 16;
+            }
         }
     }
 
@@ -1974,6 +1978,35 @@ void loop() {
             lastClock = now;
             drawClockScreen();
         }
+    }
+
+    // --- Server Info : rafraîchir toutes les 8 secondes si la liste a changé ---
+    if (currentScreen == SCR_INFO_SRV) {
+        static unsigned long lastSrvRefresh = 0;
+        if (now - lastSrvRefresh > 8000) {
+            lastSrvRefresh = now;
+            static const int MAX_SNAP = 6;
+            static PlayerInfo snap[MAX_SNAP];
+            static int snapCount = -1;
+
+            PlayerInfo fresh[MAX_SNAP];
+            int freshCount = lms.getPlayersInfo(fresh, MAX_SNAP);
+
+            bool changed = (freshCount != snapCount);
+            for (int i = 0; i < freshCount && !changed; i++) {
+                if (fresh[i].connected != snap[i].connected ||
+                    fresh[i].name      != snap[i].name      ||
+                    fresh[i].ip        != snap[i].ip)
+                    changed = true;
+            }
+            if (changed) {
+                for (int i = 0; i < freshCount; i++) snap[i] = fresh[i];
+                snapCount = freshCount;
+                drawInfoServerScreen();
+            }
+        }
+        delay(20);
+        return;
     }
 
     // --- Écrans de menu statiques : rien à faire ---
